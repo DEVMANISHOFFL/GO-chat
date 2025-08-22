@@ -1,0 +1,27 @@
+version: "3.9"
+
+services:
+  scylla:
+    image: scylladb/scylla:5.4
+    container_name: scylla-node1
+    ports:
+      - "9042:9042"   # CQL port (for clients)
+      - "9160:9160"   # Thrift (optional)
+      - "9180:9180"   # REST API
+    volumes:
+      - scylla_data:/var/lib/scylla
+    command: --smp 1 --memory 750M --overprovisioned 1
+    restart: unless-stopped
+
+  redis:
+    image: redis:7
+    container_name: redis-server
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+volumes:
+  scylla_data:
+  redis_data:

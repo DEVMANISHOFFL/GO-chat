@@ -70,8 +70,19 @@ func (s *Service) Login(req LoginRequest) (*LoginResponse, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	refreshToken, err := GenerateRefreshToken(user.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.Repo.SaveRefreshToken(refreshToken); err != nil {
+		return nil, err
+	}
+
 	return &LoginResponse{
-		Token:     token,
-		ExpiresAt: time.Now().Add(s.JWTExpiry).Unix(),
+		Token:        token,
+		RefreshToken: refreshToken.Token,
+		ExpiresAt:    time.Now().Add(s.JWTExpiry).Unix(),
 	}, nil
 }

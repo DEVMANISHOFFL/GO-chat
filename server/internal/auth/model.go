@@ -33,6 +33,15 @@ type LoginRequest struct {
 }
 
 type LoginResponse struct {
-	Token     string `json:"token"`
-	ExpiresAt int64  `json:"expires_at"`
+	Token        string `json:"token"`
+	RefreshToken string `json:"refresh_token"`
+	ExpiresAt    int64  `json:"expires_at"`
+}
+
+type RefreshToken struct {
+	RefreshID gocql.UUID `db:"refresh_id"`
+	UserID    gocql.UUID `db:"user_id"`
+	Token     string     `db:"refresh_token"`
+	ExpiresAt time.Time  `db:"expires_at"`
+	CreatedAt time.Time  `db:"created_at"`
 }

@@ -101,3 +101,17 @@ func (r *Repository) GetUserByEmailOrUsername(emailOrUsername string) (*User, er
 	}
 	return nil, err
 }
+
+func (r *Repository) SaveRefreshToken(rt *RefreshToken) error {
+	query := `
+		INSERT INTO refresh_tokens (user_id, refresh_id, refresh_token, expires_at, created_at)
+		VALUES (?, ?, ?, ?, ?)`
+
+	return r.Session.Query(query,
+		rt.UserID,
+		gocql.TimeUUID(),
+		rt.Token,
+		rt.ExpiresAt,
+		rt.CreatedAt,
+	).Exec()
+}

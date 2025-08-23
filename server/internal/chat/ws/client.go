@@ -1,0 +1,118 @@
+package ws
+
+import (
+	"bytes"
+	"encoding/json"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
+)
+
+const (
+	// Tunable parameters
+	writeWait      = 10 * time.Second
+	pongWait       = 60 * time.Second
+	pingPeriod     = (pongWait * 9) / 10
+	maxMessageSize = 1 << 20 // 1MB
+)
+
+// Client represents a single websocket connection.
+type Client struct {
+	ID            string
+	UserID        string
+	conn          *websocket.Conn
+	send          chan []byte // outbound messages
+	subscriptions map[string]struct{}
+	hub           *Hub
+	// rate limiting fields could be added here
+}
+
+// NewClient creates a new Client.
+func NewClient(conn *websocket.Conn, userID string, hub *Hub, sendQueueSize int) *Client {
+	return &Client{
+		ID:            uuid.NewString(),
+		UserID:        userID,
+		conn:          conn,
+		send:          make(chan []byte, sendQueueSize),
+		subscriptions: make(map[string]struct{}),
+		hub:           hub,
+	}
+}
+
+// readPump reads messages from websocket and routes to hub.inbound.
+func (c *Client) ReadPump() {
+	defer func() {
+		c.hub.unregister <- c
+		c.conn.Close()
+	}()
+	c.conn.SetReadLimit(maxMessageSize)
+	_ = c.conn.SetReadDeadline(time.Now().Add(pongWait))
+	c.conn.SetPongHandler(func(string) error { _ = c.conn.SetReadDeadline(time.Now().Add(pongWait)); return nil })
+
+	for {
+		_, message, err := c.conn.ReadMessage()
+		if err != nil {
+			// handle close/error
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				// optional logging
+			}
+			break
+		}
+		// Trim spaces/newlines
+		message = bytes.TrimSpace(bytes.ReplaceAll(message, []byte{'\n'}, []byte{' '}))
+		// Optional: validate message size/type, decode JSON into Event
+		var ev Event
+		if err := json.Unmarshal(message, &ev); err != nil {
+			// send error back to client
+			errEv := NewServerEvent("error", "", c.UserID, map[string]interface{}{
+				"reason": "invalid_event",
+			})
+			c.hub.SafeSend(c, errEv)
+			continue
+		}
+		// set from if missing
+		if ev.From == "" {
+			ev.From = c.UserID
+		}
+		// forward to hub for routing / business logic
+		c.hub.inbound <- ev
+	}
+}
+
+// writePump writes messages from send queue to the websocket.
+func (c *Client) WritePump() {
+	ticker := time.NewTicker(pingPeriod)
+	defer func() {
+		ticker.Stop()
+		c.conn.Close()
+	}()
+
+	for {
+		select {
+		case message, ok := <-c.send:
+			_ = c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if !ok {
+				// hub closed the channel
+				_ = c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+				return
+			}
+			w, err := c.conn.NextWriter(websocket.TextMessage)
+			if err != nil {
+				return
+			}
+			if _, err := w.Write(message); err != nil {
+				_ = w.Close()
+				return
+			}
+			if err := w.Close(); err != nil {
+				return
+			}
+		case <-ticker.C:
+			_ = c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
+		}
+	}
+}

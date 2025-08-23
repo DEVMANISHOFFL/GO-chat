@@ -52,7 +52,21 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	utils.JSONResponse(w, http.StatusOK, resp)
 }
 
+func (h *Handler) Profile(w http.ResponseWriter, r *http.Request) {
+	userID := GetUserID(r)
+	utils.JSONResponse(w, http.StatusOK, map[string]string{
+		"message": "Welcome to your profile",
+		"user_id": userID,
+	})
+}
+
 func (h *Handler) RegisterRouter(r *mux.Router) {
+
 	r.HandleFunc("/signup", h.Signup).Methods("POST")
 	r.HandleFunc("/login", h.Login).Methods("POST")
+
+	protected := r.PathPrefix("/api").Subrouter()
+	protected.Use(AuthMiddleware)
+
+	protected.HandleFunc("/profile", h.Profile).Methods("GET")
 }

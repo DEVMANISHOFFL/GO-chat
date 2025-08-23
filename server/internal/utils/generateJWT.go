@@ -21,7 +21,7 @@ func GenerateJWT(userID string, expiry time.Duration) (string, error) {
 }
 
 func ValidateJWT(tokenStr string) (jwt.MapClaims, error) {
-	token, err := jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
+	token, err := jwt.Parse(tokenStr, func(token *jwt.Token) (any, error) {
 		return JwtKey, nil
 	})
 	if err != nil {

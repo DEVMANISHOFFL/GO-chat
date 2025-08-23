@@ -19,14 +19,12 @@ func NewRepository(session *gocql.Session) *Repository {
 func (r *Repository) UserExists(username, email string) (bool, error) {
 	var id gocql.UUID
 
-	// Check username
 	if err := r.Session.Query(`SELECT id FROM users WHERE username=? LIMIT 1`, username).Scan(&id); err == nil {
 		return true, nil
 	} else if err != gocql.ErrNotFound {
 		return false, err
 	}
 
-	// Check email
 	if err := r.Session.Query(`SELECT id FROM users WHERE email=? LIMIT 1`, email).Scan(&id); err == nil {
 		return true, nil
 	} else if err != gocql.ErrNotFound {

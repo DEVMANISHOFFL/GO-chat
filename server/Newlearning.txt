@@ -1,0 +1,273 @@
+================================================================================
+0) Project Goal & Tech Choices
+--------------------------------------------------------------------------------
+Goal:
+  Build a production-style chat backend in Go with secure authentication,
+  durable message storage, and realtime communication.
+
+Stack:
+  • Go (modular packages: auth, chat, ws)
+  • ScyllaDB (Cassandra-compatible) for durable storage
+  • Redis (optional now; later for presence/rate limiting)
+  • REST (HTTP) for classic CRUD
+  • WebSocket for realtime events
+  • JWT access tokens + rotating refresh tokens
+
+Why these:
+  • Scylla/Cassandra excel at append-heavy workloads and time-ordered data
+    (room messages). TIMEUUID lets us page chronologically.
+  • JWTs avoid central state for access, while refresh tokens let us rotate
+    short-lived JWTs securely.
+  • WebSockets are perfect for live chat; we still persist all messages.
+
+================================================================================
+1) Scylla Setup & First Tables
+--------------------------------------------------------------------------------
+What we did:
+  • Ran Scylla in Docker and connected with cqlsh.
+  • Created the initial tables for users and refresh tokens.
+
+Key learnings:
+  • Older Cassandra/Scylla versions reject some clause combinations (e.g. a
+    problematic CLUSTERING ORDER). We adapted schema to be version-friendly.
+
+Core tables (final forms used):
+  users(id PK, username, email, password, created_at, updated_at)
+  users_by_email(email PK, user_id)
+  users_by_username(username PK, user_id)
+  refresh_tokens(user_id, refresh_id TIMEUUID, refresh_token, expires_at, created_at)
+  rooms(room_id PK, name, created_by, created_at)
+  room_messages((room_id), msg_id TIMEUUID, user_id, content, created_at)
+
+Reasoning:
+  • Separate lookup tables for email/username -> user_id to avoid ALLOW FILTERING.
+  • Partition room_messages by room_id, use TIMEUUID for sorting/pagination.
+
+================================================================================
+2) Go Server Bootstrapping
+--------------------------------------------------------------------------------
+What we did:
+  • Initialized the Go server with Gorilla Mux.
+  • Added health endpoints: /healthz and /readyz.
+  • Loaded config from env; established Scylla session (proto v4) and Redis.
+
+Why:
+  • Health endpoints simplify Docker/K8s orchestration and quick sanity checks.
+  • Env-based config keeps secrets/config out of code.
+
+Commands:
+  curl -i http://localhost:8080/healthz     -> 200 ok
+  curl -i http://localhost:8080/readyz      -> 200 ready
+
+================================================================================
+3) Authentication: Signup & Login
+--------------------------------------------------------------------------------
+What we did:
+  • Repository, Service, Handler layers for signup/login.
+  • Password hashing utilities.
+  • JWT helpers (GenerateJWT, ValidateJWT).
+
+Important fix:
+  • Removed “role” from JWT claims (it was undefined early on).
+  • Strict HS256 check in ValidateJWT to avoid algorithm confusion.
+
+Common pitfall:
+  • /api/profile failed with "Invalid or expired token" when the header had the
+    literal "<JWT>" instead of a real token. We switched to Python one-liners
+    (since jq wasn't installed) to extract JSON fields.
+
+Commands snippet:
+  LOGIN_RES=$(curl -s -X POST http://localhost:8080/login -H "Content-Type: application/json" -d '{{"email_or_username":"alice","password":"secret12"}}')
+  ACCESS=$(echo "$LOGIN_RES"  | python3 -c 'import sys,json; print(json.load(sys.stdin)["token"])')
+  curl -i http://localhost:8080/api/profile -H "Authorization: Bearer $ACCESS"
+
+================================================================================
+4) Refresh Token Rotation
+--------------------------------------------------------------------------------
+What we did:
+  • Implemented /api/refresh (protected). The client sends refresh_token in the
+    JSON body while authenticating with the current access JWT.
+  • On success, we issue a new JWT and ROTATE the refresh token:
+      - Save new refresh
+      - Delete old refresh
+
+Why:
+  • Rotation prevents replay and lets us revoke single sessions cleanly.
+
+Test:
+  • After refresh, calling refresh again with the old token returns 401/not found.
+
+================================================================================
+5) Logout (Revoke a Session)
+--------------------------------------------------------------------------------
+What we did:
+  • Implemented /api/logout (protected). Deletes the specific refresh token for
+    the session.
+
+Why:
+  • Lets users sign out without affecting other sessions/devices.
+
+Test:
+  • After logout, /api/refresh with the same (revoked) token should fail.
+
+================================================================================
+6) Removing ALLOW FILTERING (Scalable Reads)
+--------------------------------------------------------------------------------
+What we did:
+  • Added users_by_email and users_by_username tables.
+  • Repository now does a two-step lookup:
+      - email -> user_id -> users(id)
+      - username -> user_id -> users(id)
+
+Why:
+  • Cassandra/Scylla scale when you hit partitions with keys. ALLOW FILTERING
+    scans are anti-patterns for production.
+
+Result:
+  • login works with both email and username, using fast lookups.
+
+================================================================================
+7) Signup with LWT Reservations (Uniqueness)
+--------------------------------------------------------------------------------
+What we did:
+  • ReserveUsername and ReserveEmail using INSERT ... IF NOT EXISTS.
+  • Fixed gocql ScanCAS usage (must provide variables to scan existing columns).
+
+Why:
+  • Enforce uniqueness at write time (no races).
+
+Flow:
+  1) Reserve username (LWT); if applied=false -> reject (taken).
+  2) Reserve email (LWT); if applied=false -> reject (registered).
+  3) Insert user row.
+  4) On any failure, rollback reservations.
+
+================================================================================
+8) /api/me (Full Profile)
+--------------------------------------------------------------------------------
+What we did:
+  • Added Me service + handler to return id, username, email, timestamps.
+  • Useful for the frontend to fetch current user info.
+
+================================================================================
+9) Chat Domain over HTTP: Rooms & Messages
+--------------------------------------------------------------------------------
+What we did:
+  • Created /api/chat/rooms (POST create, GET list).
+  • Created /api/chat/rooms/{room_id}/messages:
+      - POST: persist message
+      - GET : list messages, newest-first, pagination via ?limit&before (timeuuid)
+
+Why:
+  • Build durable history first, then layer realtime on top.
+
+================================================================================
+10) WebSocket Infrastructure (Realtime)
+--------------------------------------------------------------------------------
+What we did:
+  • Built a generic internal/ws package: Hub, Client, Event.
+  • WS HTTP handler validates JWT and optionally auto-subscribes to a room via
+    ?room_id=... on connect.
+  • Event types:
+      - channel.subscribe / channel.unsubscribe
+      - chat.message
+
+Avoiding import cycles:
+  • The ws package does NOT import chat. Instead, main.go injects a
+    PersistMessageFunc callback:
+      persist := func(roomID, userID gocql.UUID, text string, ts time.Time) error {
+        return chatRepo.InsertMessage(&chat.Message{{RoomID: roomID, MsgID: gocql.TimeUUID(), UserID: userID, Content: text, CreatedAt: ts}})
+      }
+      hub := ws.NewHub(persist)
+
+routeEvent highlights:
+  • "channel.subscribe" -> Hub.Subscribe(client, room_id) and ack
+  • "chat.message"      -> parse UUIDs, persist via callback, broadcast to channel
+
+================================================================================
+11) Realtime Testing (wscat)
+--------------------------------------------------------------------------------
+Gotchas:
+  • Do NOT type the extra '>' yourself; wscat shows it already.
+  • Replace placeholders with real UUIDs; wscat won't expand shell variables.
+  • If you pass ?room_id=... in the WS URL and auto-subscribe in the handler,
+    you can skip sending channel.subscribe manually.
+
+Recipe:
+  TOKEN=$(...) ; USER_ID=$(...) ; ROOM_ID=$(...)
+
+  Terminal A:
+    wscat -c "ws://localhost:8080/ws?token=$TOKEN&room_id=$ROOM_ID"
+
+  Terminal B:
+    wscat -c "ws://localhost:8080/ws?token=$TOKEN&room_id=$ROOM_ID"
+
+  Send from A (paste literal UUIDs if you didn't pass room_id in URL):
+    {"type":"channel.subscribe","from":"USER_UUID","to":"ROOM_UUID"}
+    {"type":"chat.message","from":"USER_UUID","to":"ROOM_UUID","payload":{"text":"hello from ws"}}
+
+  Verify persistence:
+    curl -s "http://localhost:8080/api/chat/rooms/$ROOM_ID/messages?limit=1" -H "Authorization: Bearer $TOKEN"
+
+================================================================================
+12) Troubleshooting Lessons
+--------------------------------------------------------------------------------
+• Old Scylla syntax incompatibilities -> adjusted schema; use ORDER BY at query time.
+• JWT role claim undefined -> removed until roles are implemented.
+• "Invalid or expired token" -> ensure proper Authorization header with real token.
+• No jq -> used Python json one-liners to parse responses.
+• LWT ScanCAS error -> must pass variables to ScanCAS for existing row columns.
+• Import cycles (chat <-> ws) -> broke cycle with callback injection.
+• websocat path issue -> installed real binary or used wscat.
+• "invalid_event" -> ensure valid JSON, correct event type, and real UUIDs.
+
+================================================================================
+13) What You Learned (Key Concepts)
+--------------------------------------------------------------------------------
+• Cassandra/Scylla data modeling: partition keys, clustering, TIMEUUID.
+• Enforcing uniqueness with LWT (IF NOT EXISTS) and ScanCAS in gocql.
+• JWT-based auth with short-lived access + long-lived refresh rotation.
+• Clean service layering in Go (repo/service/handler/middleware).
+• WebSocket hub patterns: client registry, user/channel routing, backpressure.
+• Breaking import cycles via dependency injection (callbacks/interfaces).
+• Practical testing with curl + Python one-liners + wscat.
+
+================================================================================
+14) Next Steps (Pick & Build)
+--------------------------------------------------------------------------------
+• Typing indicators over WS (no DB).
+• Presence via Redis (room online sets + TTL heartbeats).
+• Rate limiting (HTTP + WS) via Redis counters.
+• Secrets to env; key rotation; refresh hashing.
+• Observability: structured logs, Prometheus metrics, pprof.
+• Attachments (S3); message edits/deletes; search (OpenSearch).
+• Load testing (k6); CI/CD; containerization & K8s.
+
+================================================================================
+Appendix: Handy Command Reference
+--------------------------------------------------------------------------------
+Health:
+  curl -i http://localhost:8080/healthz
+  curl -i http://localhost:8080/readyz
+
+Auth:
+  curl -i -X POST http://localhost:8080/signup -H "Content-Type: application/json" -d '{{"username":"bob","email":"bob@example.com","password":"secret12"}}'
+  LOGIN_RES=$(curl -s -X POST http://localhost:8080/login -H "Content-Type: application/json" -d '{{"email_or_username":"bob","password":"secret12"}}')
+  ACCESS=$(echo "$LOGIN_RES"  | python3 -c 'import sys,json; print(json.load(sys.stdin)["token"])')
+  REFRESH=$(echo "$LOGIN_RES" | python3 -c 'import sys,json; print(json.load(sys.stdin)["refresh_token"])')
+  curl -i http://localhost:8080/api/me -H "Authorization: Bearer $ACCESS"
+  NEW=$(curl -s -X POST http://localhost:8080/api/refresh -H "Authorization: Bearer $ACCESS" -H "Content-Type: application/json" -d "{{\\"refresh_token\\":\\"$REFRESH\\"}}")
+  curl -i -X POST http://localhost:8080/api/logout -H "Authorization: Bearer $ACCESS" -H "Content-Type: application/json" -d "{{\\"refresh_token\\":\\"$REFRESH\\"}}"
+
+Rooms & Messages:
+  CREATE_RES=$(curl -s -i -X POST http://localhost:8080/api/chat/rooms -H "Authorization: Bearer $ACCESS" -H "Content-Type: application/json" -d '{{"name":"general"}}')
+  ROOM_ID=$(echo "$CREATE_RES" | sed -n 's/.*"room_id":"\\([^"]*\\)".*/\\1/p')
+  curl -i -X POST "http://localhost:8080/api/chat/rooms/$ROOM_ID/messages" -H "Authorization: Bearer $ACCESS" -H "Content-Type: application/json" -d '{{"content":"hello world"}}'
+  curl -i "http://localhost:8080/api/chat/rooms/$ROOM_ID/messages?limit=2" -H "Authorization: Bearer $ACCESS"
+
+WebSocket:
+  wscat -c "ws://localhost:8080/ws?token=$ACCESS&room_id=$ROOM_ID"
+  {{then send valid JSON messages as shown above}}
+
+================================================================================
+End of Progress Tracker

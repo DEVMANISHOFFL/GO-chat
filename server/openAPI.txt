@@ -1,0 +1,9 @@
+Auth: POST /signup, POST /login, POST /api/refresh, POST /api/logout, GET /api/me
+
+Rooms: POST /api/chat/rooms, GET /api/chat/rooms
+
+Messages: POST /api/chat/rooms/{room_id}/messages, GET /api/chat/rooms/{room_id}/messages?limit=&before=
+
+WS: GET /ws?token=<JWT>[&room_id=<uuid>]
+
+events: channel.subscribe, chat.message, typing.start, typing.stop

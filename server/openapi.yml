@@ -1,0 +1,397 @@
+openapi: 3.0.3
+info:
+  title: GOchat API
+  version: 0.1.0
+  description: >
+    Minimal API for GOchat: auth, rooms, messages, and WebSocket entrypoint.
+    JWT access tokens + rotating refresh tokens. Scylla-backed persistence.
+
+servers:
+  - url: http://localhost:8080
+
+tags:
+  - name: Health
+  - name: Auth
+  - name: Users
+  - name: Chat
+  - name: WebSocket
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    RoomIdParam:
+      name: room_id
+      in: path
+      required: true
+      description: Room UUID
+      schema: { type: string, format: uuid }
+
+    LimitParam:
+      name: limit
+      in: query
+      required: false
+      description: Max items to return (default 50)
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+
+    BeforeParam:
+      name: before
+      in: query
+      required: false
+      description: |
+        Pagination cursor (TIMEUUID string). Returns messages *before* this msg_id.
+      schema: { type: string }
+
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        error: { type: string }
+      required: [error]
+
+    SignupRequest:
+      type: object
+      properties:
+        username: { type: string }
+        email: { type: string, format: email }
+        password: { type: string, minLength: 6 }
+      required: [username, email, password]
+
+    User:
+      type: object
+      properties:
+        id:        { type: string, format: uuid }
+        username:  { type: string }
+        email:     { type: string, format: email }
+        created_at:{ type: string, format: date-time }
+        updated_at:{ type: string, format: date-time }
+      required: [id, username, email]
+
+    LoginRequest:
+      type: object
+      properties:
+        email_or_username: { type: string }
+        password:          { type: string }
+      required: [email_or_username, password]
+
+    LoginResponse:
+      type: object
+      properties:
+        token:          { type: string, description: "JWT access token (Bearer)" }
+        refresh_token:  { type: string }
+        expires_at:     { type: integer, description: "Unix seconds (exp of access token)" }
+      required: [token, refresh_token, expires_at]
+
+    RefreshRequest:
+      type: object
+      properties:
+        refresh_token: { type: string }
+      required: [refresh_token]
+
+    LogoutRequest:
+      type: object
+      properties:
+        refresh_token: { type: string }
+      required: [refresh_token]
+
+    Room:
+      type: object
+      properties:
+        room_id:    { type: string, format: uuid }
+        name:       { type: string }
+        created_by: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+      required: [room_id, name]
+
+    CreateRoomRequest:
+      type: object
+      properties:
+        name: { type: string }
+      required: [name]
+
+    Message:
+      type: object
+      properties:
+        room_id:    { type: string, format: uuid }
+        msg_id:     { type: string, description: "TIMEUUID" }
+        user_id:    { type: string, format: uuid }
+        content:    { type: string }
+        created_at: { type: string, format: date-time }
+      required: [room_id, msg_id, user_id, content, created_at]
+
+    CreateMessageRequest:
+      type: object
+      properties:
+        content: { type: string }
+      required: [content]
+
+paths:
+  /healthz:
+    get:
+      tags: [Health]
+      summary: Liveness probe
+      responses:
+        "200":
+          description: OK (text)
+          content:
+            text/plain:
+              schema: { type: string, example: ok }
+
+  /readyz:
+    get:
+      tags: [Health]
+      summary: Readiness probe
+      responses:
+        "200":
+          description: Ready (text)
+          content:
+            text/plain:
+              schema: { type: string, example: ready }
+
+  /signup:
+    post:
+      tags: [Auth]
+      summary: Create a new user (LWT uniqueness)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SignupRequest" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "400":
+          description: Bad Request (dup username/email, validation)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /login:
+    post:
+      tags: [Auth]
+      summary: Login with email or username
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LoginRequest" }
+      responses:
+        "200":
+          description: Auth tokens
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LoginResponse" }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /api/refresh:
+    post:
+      tags: [Auth]
+      summary: Rotate refresh token and issue new access token
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RefreshRequest" }
+      responses:
+        "200":
+          description: New tokens
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LoginResponse" }
+        "401":
+          description: Invalid/expired refresh or auth
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /api/logout:
+    post:
+      tags: [Auth]
+      summary: Revoke a specific refresh token (logout this session)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LogoutRequest" }
+      responses:
+        "200":
+          description: Logged out
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: logged out }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /api/me:
+    get:
+      tags: [Users]
+      summary: Get current user profile
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Current user
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /api/profile:
+    get:
+      tags: [Users]
+      summary: Simple profile ping (message + user_id)
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string, example: Welcome to your profile }
+                  user_id: { type: string, format: uuid }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /api/chat/rooms:
+    get:
+      tags: [Chat]
+      summary: List rooms
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Rooms
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Room" }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+    post:
+      tags: [Chat]
+      summary: Create room
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateRoomRequest" }
+      responses:
+        "200":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Room" }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /api/chat/rooms/{room_id}/messages:
+    get:
+      tags: [Chat]
+      summary: List messages (newest first)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/RoomIdParam"
+        - $ref: "#/components/parameters/LimitParam"
+        - $ref: "#/components/parameters/BeforeParam"
+      responses:
+        "200":
+          description: Messages
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Message" }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+    post:
+      tags: [Chat]
+      summary: Send a message
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/RoomIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateMessageRequest" }
+      responses:
+        "201":
+          description: Created (echo, or minimal ack)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Message" }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /ws:
+    get:
+      tags: [WebSocket]
+      summary: WebSocket entrypoint
+      description: >
+        Upgrade to WebSocket with either `?token=<JWT>` query param or an `Authorization: Bearer <JWT>` header.
+        Optional `?room_id=<uuid>` query param to auto-subscribe on connect.
+        Event types (JSON):
+        - channel.subscribe / channel.unsubscribe
+        - chat.message { from, to, payload: { text } }
+        - typing.start / typing.stop
+      parameters:
+        - name: token
+          in: query
+          required: false
+          description: JWT access token (alternative to Authorization header)
+          schema: { type: string }
+        - name: room_id
+          in: query
+          required: false
+          description: Auto-subscribe to this room on connect
+          schema: { type: string, format: uuid }
+      responses:
+        "101":
+          description: WebSocket Upgrade
+        "401":
+          description: Unauthorized (invalid/missing token)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }

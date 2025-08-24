@@ -1,51 +1,167 @@
 package main
 
 import (
+	"context"
 	"fmt"
-	"gochat/internal/auth"
-	"gochat/internal/chat"    // 👈 for WSHandler
-	"gochat/internal/chat/ws" // 👈 for NewHub
-	"gochat/internal/db"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"time"
 
+	"gochat/internal/presence"
+
+	"gochat/internal/auth"
+	"gochat/internal/chat"
+	"gochat/internal/db"
+	"gochat/internal/utils"
+	"gochat/internal/ws"
+
+	"github.com/gocql/gocql"
 	"github.com/gorilla/mux"
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {
-	// Initialize databases
-	scyllaSession := db.InitScylla([]string{"127.0.0.1"}, "chat_app")
+	// --- Config (env with sensible defaults) ---
+	httpAddr := getEnv("HTTP_ADDR", ":8080")
+	scyllaHost := getEnv("SCYLLA_HOST", "127.0.0.1")
+	scyllaKeyspace := getEnv("SCYLLA_KEYSPACE", "chat_app")
+	redisAddr := getEnv("REDIS_ADDR", "127.0.0.1:6379")
+
+	// --- DB: Scylla + Redis ---
+	scyllaSession := db.InitScylla([]string{scyllaHost}, scyllaKeyspace)
 	defer scyllaSession.Close()
 
-	redisClient := db.InitRedis("localhost:6379")
+	redisClient := db.InitRedis(redisAddr)
 	defer redisClient.Close()
 
-	// Initialize auth
+	chatRepo := chat.NewRepository(scyllaSession)
+	chatSvc := chat.NewService(chatRepo)
+	persist := func(roomID, userID gocql.UUID, text string, createdAt time.Time) error {
+		return chatRepo.InsertMessage(&chat.Message{
+			RoomID:    roomID,
+			MsgID:     gocql.TimeUUID(),
+			UserID:    userID,
+			Content:   text,
+			CreatedAt: createdAt,
+		})
+	}
+	pres := presence.New(redisClient, 45*time.Second)
+
+	chatH := chat.NewHandler(chatSvc)
+	hub := ws.NewHub(persist)
+	hub.Presence = pres
+	go hub.Run()
+
+	// --- DI: auth repo → service → handler ---
 	authRepo := auth.NewRepository(scyllaSession)
 	authService := auth.NewService(authRepo)
 	authHandler := auth.NewHandler(authService)
 
-	// Router
+	// --- Router ---
 	r := mux.NewRouter()
+
+	api := r.PathPrefix("/api").Subrouter()
+	api.Use(auth.AuthMiddleware)
+
+	chatH.Register(api.PathPrefix("/chat").Subrouter(), scyllaSession)
+
+	r.HandleFunc("/api/chat/rooms/{room_id}/presence", authMW(func(w http.ResponseWriter, r *http.Request) {
+		roomID := mux.Vars(r)["room_id"]
+		users, err := pres.List(r.Context(), roomID, 1000)
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"room_id": roomID,
+			"online":  users,
+			"count":   len(users),
+		})
+	})).Methods("GET")
+
+	// Health endpoints
+	r.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}).Methods("GET")
+
+	r.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
+		if err := pingScylla(scyllaSession); err != nil {
+			http.Error(w, "scylla not ready", http.StatusServiceUnavailable)
+			return
+		}
+		if err := pingRedis(redisClient); err != nil {
+			http.Error(w, "redis not ready", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ready"))
+	}).Methods("GET")
+
+	// Auth routes (/signup, /login, /api/profile)
 	authHandler.RegisterRouter(r)
 
-	// WebSocket hub
-	hub := ws.NewHub()
-	go hub.Run()
+	// WebSocket hub + JWT validator
 
-	// Dummy token validator
-	validator := func(token string) (string, error) {
-		if token == "secrettoken" {
-			return "user123", nil
+	jwtValidator := func(token string) (string, error) {
+		claims, err := utils.ValidateJWT(token)
+		if err != nil {
+			return "", err
 		}
-		return "", fmt.Errorf("invalid token")
+		uid, _ := claims["user_id"].(string)
+		if uid == "" {
+			return "", fmt.Errorf("user_id missing in token")
+		}
+		return uid, nil
 	}
 
-	// 👇 Register the /ws endpoint on mux.Router, not http.HandleFunc
-	r.HandleFunc("/ws", chat.WSHandler(hub, validator, nil, 256))
+	// /ws endpoint (uses real JWT now)
+	r.HandleFunc("/ws", chat.WSHandler(hub, jwtValidator, nil, 256))
 
-	log.Println("Server running on :8080")
-	if err := http.ListenAndServe(":8080", r); err != nil {
-		log.Fatal(err)
+	// --- HTTP server + graceful shutdown ---
+	srv := &http.Server{
+		Addr:         httpAddr,
+		Handler:      r,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
 	}
+
+	go func() {
+		log.Printf("server listening on %s", httpAddr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("listen: %v", err)
+		}
+	}()
+
+	// Wait for Ctrl+C
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt)
+	<-stop
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Printf("server shutdown: %v", err)
+	}
+	log.Println("server stopped")
+}
+
+func getEnv(k, def string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return def
+}
+
+func pingScylla(sess *gocql.Session) error {
+	var t time.Time
+	return sess.Query(`SELECT now() FROM system.local`).Scan(&t)
+}
+
+func pingRedis(rdb *redis.Client) error {
+	_, err := rdb.Ping(db.Ctx).Result()
+	return err
 }

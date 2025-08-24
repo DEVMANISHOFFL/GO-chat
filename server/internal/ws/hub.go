@@ -5,38 +5,46 @@ import (
 	"encoding/json"
 	"sync"
 	"time"
+
+	"github.com/gocql/gocql"
 )
 
-// Hub manages active websocket clients and subscriptions.
+type PersistMessageFunc func(roomID, userID gocql.UUID, text string, createdAt time.Time) error
+
 type Hub struct {
 	register   chan *Client
 	unregister chan *Client
 	inbound    chan Event
-	// optional system channel — e.g., events from services/persistence
-	system chan Event
+	system     chan Event
 
-	clients      map[*Client]struct{}
-	userConns    map[string]map[*Client]struct{} // userID -> clients
-	channelSubs  map[string]map[*Client]struct{} // channelID -> clients
-	mu           sync.RWMutex
+	clients     map[*Client]struct{}
+	userConns   map[string]map[*Client]struct{}
+	channelSubs map[string]map[*Client]struct{}
+	mu          sync.RWMutex
+
 	shutdownOnce sync.Once
 	ctx          context.Context
 	cancel       context.CancelFunc
+
+	persistMessage PersistMessageFunc
+	Presence       interface {
+		Touch(ctx context.Context, roomID, userID string) error
+	}
 }
 
-// NewHub creates a new Hub.
-func NewHub() *Hub {
+func NewHub(persist PersistMessageFunc) *Hub {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Hub{
-		register:    make(chan *Client),
-		unregister:  make(chan *Client),
-		inbound:     make(chan Event, 1024),
-		system:      make(chan Event, 256),
-		clients:     make(map[*Client]struct{}),
-		userConns:   make(map[string]map[*Client]struct{}),
-		channelSubs: make(map[string]map[*Client]struct{}),
-		ctx:         ctx,
-		cancel:      cancel,
+		register:       make(chan *Client),
+		unregister:     make(chan *Client),
+		inbound:        make(chan Event, 1024),
+		system:         make(chan Event, 256),
+		clients:        make(map[*Client]struct{}),
+		userConns:      make(map[string]map[*Client]struct{}),
+		channelSubs:    make(map[string]map[*Client]struct{}),
+		ctx:            ctx,
+		cancel:         cancel,
+		persistMessage: persist,
 	}
 }
 
@@ -46,6 +54,30 @@ func (h *Hub) RegisterClient(c *Client) {
 
 func (h *Hub) UnregisterClient(c *Client) {
 	h.unregister <- c
+}
+
+func (h *Hub) firstClientIDForUser(userID string) string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if set, ok := h.userConns[userID]; ok {
+		for c := range set {
+			return c.ID
+		}
+	}
+	return ""
+}
+
+func (h *Hub) broadcast(ev Event) {
+	// If To is empty → global broadcast
+	if ev.To == "" {
+		h.broadcastAll(ev)
+		return
+	}
+	// Try user first; if not present, treat To as a channel/room id
+	if h.broadcastToUser(ev.To, ev) {
+		return
+	}
+	h.broadcastToChannel(ev.To, ev, "")
 }
 
 // Run starts the hub event loop. Call as goroutine.
@@ -121,23 +153,113 @@ func (h *Hub) removeClient(c *Client) {
 
 // routeEvent decides how to broadcast an event.
 func (h *Hub) routeEvent(ev Event) {
-	// Server should set server ts if not set
 	if ev.ServerTs == 0 {
-		ev.ServerTs = int64(time.Now().Unix())
+		ev.ServerTs = time.Now().Unix()
 	}
 
-	switch {
-	case ev.To == "":
-		// broadcast to all clients
-		h.broadcastAll(ev)
-	default:
-		// Decide if 'To' is a user or channel ID by convention.
-		// Most implementations will use a prefix or context-based routing.
-		// For now: try user, then channel.
-		if h.broadcastToUser(ev.To, ev) {
+	switch ev.Type {
+
+	case "typing.start":
+		if ev.From == "" || ev.To == "" {
 			return
 		}
+		exclude := h.firstClientIDForUser(ev.From)
+		h.broadcastToChannel(ev.To, Event{
+			Type:     "typing.start",
+			From:     ev.From,
+			To:       ev.To,
+			Payload:  ev.Payload,
+			ServerTs: time.Now().Unix(),
+		}, exclude)
+		if h.Presence != nil && ev.To != "" && ev.From != "" {
+			_ = h.Presence.Touch(h.ctx, ev.To, ev.From)
+		}
+		return
+
+	case "typing.stop":
+		if ev.From == "" || ev.To == "" {
+			return
+		}
+		exclude := h.firstClientIDForUser(ev.From)
+		h.broadcastToChannel(ev.To, Event{
+			Type:     "typing.stop",
+			From:     ev.From,
+			To:       ev.To,
+			Payload:  ev.Payload,
+			ServerTs: time.Now().Unix(),
+		}, exclude)
+		if h.Presence != nil && ev.To != "" && ev.From != "" {
+			_ = h.Presence.Touch(h.ctx, ev.To, ev.From)
+		}
+		return
+
+	case "channel.subscribe":
+		h.mu.RLock()
+		var cli *Client
+		if set, ok := h.userConns[ev.From]; ok {
+			for c := range set {
+				cli = c
+				break
+			}
+		}
+		h.mu.RUnlock()
+		if cli != nil && ev.To != "" {
+			h.Subscribe(cli, ev.To)
+			h.broadcastToUser(ev.From, Event{
+				Type:     "channel.subscribed",
+				To:       ev.To,
+				From:     "server",
+				Payload:  map[string]any{"channel": ev.To},
+				ServerTs: time.Now().Unix(),
+			})
+		}
+
+		if h.Presence != nil && ev.To != "" && ev.From != "" {
+			_ = h.Presence.Touch(h.ctx, ev.To, ev.From)
+		}
+		return
+
+	case "channel.unsubscribe":
+		h.mu.RLock()
+		var cli *Client
+		if set, ok := h.userConns[ev.From]; ok {
+			for c := range set {
+				cli = c
+				break
+			}
+		}
+		h.mu.RUnlock()
+		if cli != nil && ev.To != "" {
+			h.Unsubscribe(cli, ev.To)
+			h.broadcastToUser(ev.From, Event{
+				Type:     "channel.unsubscribed",
+				To:       ev.To,
+				From:     "server",
+				Payload:  map[string]any{"channel": ev.To},
+				ServerTs: time.Now().Unix(),
+			})
+		}
+		return
+
+	case "chat.message":
+		// Expect ev.To = room_id (UUID), ev.From = user_id (UUID), payload["text"] = string
+		roomID, err1 := gocql.ParseUUID(ev.To)
+		userID, err2 := gocql.ParseUUID(ev.From)
+		var text string
+		if t, ok := ev.Payload["text"].(string); ok {
+			text = t
+		}
+		if err1 == nil && err2 == nil && text != "" && h.persistMessage != nil {
+			_ = h.persistMessage(roomID, userID, text, time.Now().UTC())
+		}
 		h.broadcastToChannel(ev.To, ev, "")
+		if h.Presence != nil && ev.To != "" && ev.From != "" {
+			_ = h.Presence.Touch(h.ctx, ev.To, ev.From)
+		}
+		return
+
+	default:
+		h.broadcast(ev) // fallback (global/user/channel)
 	}
 }
 

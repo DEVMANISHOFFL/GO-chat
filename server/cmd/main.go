@@ -20,6 +20,7 @@ import (
 	"github.com/gocql/gocql"
 	"github.com/gorilla/mux"
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 )
 
 func main() {
@@ -54,6 +55,8 @@ func main() {
 	hub.Presence = pres
 	go hub.Run()
 
+	logger, _ := zap.NewDevelopment() // or zap.NewProduction()
+	defer logger.Sync()
 	// --- DI: auth repo → service → handler ---
 	authRepo := auth.NewRepository(scyllaSession)
 	authService := auth.NewService(authRepo)
@@ -67,19 +70,19 @@ func main() {
 
 	chatH.Register(api.PathPrefix("/chat").Subrouter(), scyllaSession)
 
-	r.HandleFunc("/api/chat/rooms/{room_id}/presence", authMW(func(w http.ResponseWriter, r *http.Request) {
+	api.HandleFunc("/chat/rooms/{room_id}/presence", func(w http.ResponseWriter, r *http.Request) {
 		roomID := mux.Vars(r)["room_id"]
 		users, err := pres.List(r.Context(), roomID, 1000)
 		if err != nil {
-			http.Error(w, err.Error(), 500)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
+		utils.WriteJSON(w, http.StatusOK, map[string]any{
 			"room_id": roomID,
 			"online":  users,
 			"count":   len(users),
 		})
-	})).Methods("GET")
+	}).Methods("GET")
 
 	// Health endpoints
 	r.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -118,7 +121,7 @@ func main() {
 	}
 
 	// /ws endpoint (uses real JWT now)
-	r.HandleFunc("/ws", chat.WSHandler(hub, jwtValidator, nil, 256))
+	r.HandleFunc("/ws", chat.WSHandler(hub, jwtValidator, logger, 256))
 
 	// --- HTTP server + graceful shutdown ---
 	srv := &http.Server{

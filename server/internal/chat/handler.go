@@ -5,6 +5,7 @@ package chat
 import (
 	"gochat/internal/ws"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -25,18 +26,31 @@ import (
 type AuthValidator func(token string) (userID string, err error)
 
 var upgrader = websocket.Upgrader{
-	// Tighten CheckOrigin in production to allowed origins list
-	CheckOrigin: func(r *http.Request) bool { return true },
+	CheckOrigin: func(r *http.Request) bool {
+		o := r.Header.Get("Origin")
+		if os.Getenv("ENV") == "dev" || os.Getenv("ALLOW_ALL_ORIGINS") == "1" {
+			return true
+		}
+		return o == "http://localhost:3000" || o == "http://127.0.0.1:3000"
+	},
 }
 
-// WSHandler returns an http.HandlerFunc that upgrades the connection,
-// authenticates the user, and registers the client with the hub.
+// WSHandler upgrades, authenticates, registers client, subscribes to room, and acks.
 func WSHandler(hub *ws.Hub, validator AuthValidator, logger *zap.Logger, sendQueueSize int) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Extract token: try Authorization header first, then query param.
+		if logger != nil {
+			logger.Info("ws.upgrade.attempt",
+				zap.String("origin", r.Header.Get("Origin")),
+				zap.String("remote", r.RemoteAddr),
+				zap.String("room_id", r.URL.Query().Get("room_id")),
+				zap.Bool("has_auth_header", strings.HasPrefix(strings.ToLower(r.Header.Get("Authorization")), "bearer ")),
+				zap.Bool("has_token_query", r.URL.Query().Get("token") != ""),
+			)
+		}
+
+		// 1) Extract token
 		var token string
-		auth := r.Header.Get("Authorization")
-		if strings.HasPrefix(strings.ToLower(auth), "bearer ") {
+		if auth := r.Header.Get("Authorization"); strings.HasPrefix(strings.ToLower(auth), "bearer ") {
 			token = auth[7:]
 		} else {
 			token = r.URL.Query().Get("token")
@@ -46,29 +60,37 @@ func WSHandler(hub *ws.Hub, validator AuthValidator, logger *zap.Logger, sendQue
 			return
 		}
 
+		// 2) Validate via injected validator
 		userID, err := validator(token)
 		if err != nil || userID == "" {
 			http.Error(w, "invalid token", http.StatusUnauthorized)
 			return
 		}
 
+		// 3) Upgrade
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
-			logger.Warn("ws.upgrade.failed", zap.Error(err))
+			if logger != nil {
+				logger.Warn("ws.upgrade.failed", zap.Error(err))
+			}
 			return
 		}
+		if logger != nil {
+			logger.Info("ws.upgrade.ok", zap.String("user_id", userID))
+		}
 
+		// 4) Register client
 		client := ws.NewClient(conn, userID, hub, sendQueueSize)
-		// register and start pumps
 		hub.RegisterClient(client)
 		go client.WritePump()
 		go client.ReadPump()
-		
-		roomID := r.URL.Query().Get("room_id")
-		if roomID != "" {
+
+		// 5) Optional room auto-subscribe
+		if roomID := r.URL.Query().Get("room_id"); roomID != "" {
 			hub.Subscribe(client, roomID)
 		}
-		// Optionally send a welcome/presence event
+
+		// 6) Ack
 		welcome := ws.NewServerEvent("conn.ack", "server", userID, map[string]interface{}{
 			"connected_at": time.Now().Unix(),
 			"client_id":    client.ID,

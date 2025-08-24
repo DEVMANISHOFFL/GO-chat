@@ -10,7 +10,6 @@ import (
 )
 
 const (
-	// Tunable parameters
 	writeWait      = 10 * time.Second
 	pongWait       = 60 * time.Second
 	pingPeriod     = (pongWait * 9) / 10
@@ -25,10 +24,8 @@ type Client struct {
 	send          chan []byte // outbound messages
 	subscriptions map[string]struct{}
 	hub           *Hub
-	// rate limiting fields could be added here
 }
 
-// NewClient creates a new Client.
 func NewClient(conn *websocket.Conn, userID string, hub *Hub, sendQueueSize int) *Client {
 	return &Client{
 		ID:            uuid.NewString(),
@@ -40,7 +37,7 @@ func NewClient(conn *websocket.Conn, userID string, hub *Hub, sendQueueSize int)
 	}
 }
 
-// readPump reads messages from websocket and routes to hub.inbound.
+// ReadPump reads messages from websocket and routes to hub.inbound.
 func (c *Client) ReadPump() {
 	defer func() {
 		c.hub.unregister <- c
@@ -48,12 +45,14 @@ func (c *Client) ReadPump() {
 	}()
 	c.conn.SetReadLimit(maxMessageSize)
 	_ = c.conn.SetReadDeadline(time.Now().Add(pongWait))
-	c.conn.SetPongHandler(func(string) error { _ = c.conn.SetReadDeadline(time.Now().Add(pongWait)); return nil })
+	c.conn.SetPongHandler(func(string) error {
+		_ = c.conn.SetReadDeadline(time.Now().Add(pongWait))
+		return nil
+	})
 
 	for {
 		_, message, err := c.conn.ReadMessage()
 		if err != nil {
-			// handle close/error
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				// optional logging
 			}
@@ -61,26 +60,27 @@ func (c *Client) ReadPump() {
 		}
 		// Trim spaces/newlines
 		message = bytes.TrimSpace(bytes.ReplaceAll(message, []byte{'\n'}, []byte{' '}))
-		// Optional: validate message size/type, decode JSON into Event
+
+		// Decode JSON into Event
 		var ev Event
 		if err := json.Unmarshal(message, &ev); err != nil {
 			// send error back to client
-			errEv := NewServerEvent("error", "", c.UserID, map[string]interface{}{
+			errEv := NewServerEvent("error", "server", c.UserID, map[string]interface{}{
 				"reason": "invalid_event",
 			})
 			c.hub.SafeSend(c, errEv)
 			continue
 		}
-		// set from if missing
+		// ensure "from" is set
 		if ev.From == "" {
 			ev.From = c.UserID
 		}
-		// forward to hub for routing / business logic
+		// route to hub for business logic
 		c.hub.inbound <- ev
 	}
 }
 
-// writePump writes messages from send queue to the websocket.
+// WritePump writes messages from send queue to the websocket.
 func (c *Client) WritePump() {
 	ticker := time.NewTicker(pingPeriod)
 	defer func() {
@@ -93,7 +93,6 @@ func (c *Client) WritePump() {
 		case message, ok := <-c.send:
 			_ = c.conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if !ok {
-				// hub closed the channel
 				_ = c.conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}

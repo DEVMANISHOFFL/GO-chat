@@ -9,10 +9,10 @@ import (
 	"os/signal"
 	"time"
 
+	"gochat/internal/chat"
 	"gochat/internal/presence"
 
 	"gochat/internal/auth"
-	"gochat/internal/chat"
 	"gochat/internal/db"
 	"gochat/internal/utils"
 	"gochat/internal/ws"
@@ -50,7 +50,7 @@ func main() {
 	}
 	pres := presence.New(redisClient, 45*time.Second)
 
-	chatH := chat.NewHandler(chatSvc)
+	chatH := chat.NewHandler(chatSvc, scyllaSession)
 	hub := ws.NewHub(persist)
 	hub.Presence = pres
 	go hub.Run()
@@ -68,9 +68,9 @@ func main() {
 	api := r.PathPrefix("/api").Subrouter()
 	api.Use(auth.AuthMiddleware)
 
-	chatH.Register(api.PathPrefix("/chat").Subrouter(), scyllaSession)
+	chatH.Register(api.PathPrefix("/chat").Subrouter())
 
-	api.HandleFunc("/chat/rooms/{room_id}/presence", func(w http.ResponseWriter, r *http.Request) {
+	api.HandleFunc("api/chat/rooms/{room_id}/presence", func(w http.ResponseWriter, r *http.Request) {
 		roomID := mux.Vars(r)["room_id"]
 		users, err := pres.List(r.Context(), roomID, 1000)
 		if err != nil {
@@ -123,10 +123,11 @@ func main() {
 	// /ws endpoint (uses real JWT now)
 	r.HandleFunc("/ws", chat.WSHandler(hub, jwtValidator, logger, 256))
 
+	handler := withCORS(r)
 	// --- HTTP server + graceful shutdown ---
 	srv := &http.Server{
 		Addr:         httpAddr,
-		Handler:      r,
+		Handler:      handler,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
@@ -167,4 +168,25 @@ func pingScylla(sess *gocql.Session) error {
 func pingRedis(rdb *redis.Client) error {
 	_, err := rdb.Ping(db.Ctx).Result()
 	return err
+}
+
+// cors.go (or in main.go)
+
+func withCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin == "http://localhost:3000" || origin == "http://127.0.0.1:3000" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+		}
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
+		w.Header().Set("Access-Control-Max-Age", "3600")
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }

@@ -1,5 +1,6 @@
 export type Room = {
 id: string;
+uuid:string;
 name: string;
 type?: 'channel' | 'dm';
 unreadCount?: number;

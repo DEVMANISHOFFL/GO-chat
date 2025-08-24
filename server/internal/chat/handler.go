@@ -1,28 +1,23 @@
 package chat
 
-//  {"type":"chat.message","from":"user123","to":"user123","payload":{"text":"hey"},"server_ts":1755979642}
-
 import (
-	"gochat/internal/ws"
+	"encoding/json"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
-	"encoding/json"
-	"strconv"
-
+	"github.com/gocql/gocql"
+	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
 
 	"gochat/internal/auth"
 	"gochat/internal/utils"
-
-	"github.com/gocql/gocql"
-	"github.com/gorilla/mux"
+	"gochat/internal/ws"
 )
 
-// AuthValidator validates token and returns userID on success.
 type AuthValidator func(token string) (userID string, err error)
 
 var upgrader = websocket.Upgrader{
@@ -35,7 +30,24 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
-// WSHandler upgrades, authenticates, registers client, subscribes to room, and acks.
+// ---- Handler with Scylla session ----
+type Handler struct {
+	Svc    *Service
+	Scylla *gocql.Session
+}
+
+func NewHandler(s *Service, scylla *gocql.Session) *Handler {
+	return &Handler{Svc: s, Scylla: scylla}
+}
+
+// Register under /api/chat (subrouter passed by caller)
+func (h *Handler) Register(r *mux.Router) {
+	r.HandleFunc("/rooms", h.CreateRoom).Methods("POST")
+	r.HandleFunc("/rooms", h.ListRooms).Methods("GET")
+	r.HandleFunc("/rooms/{room_id}/messages", h.SendMessage).Methods("POST")
+	r.HandleFunc("/rooms/{room_id}/messages", h.ListMessages).Methods("GET")
+}
+
 func WSHandler(hub *ws.Hub, validator AuthValidator, logger *zap.Logger, sendQueueSize int) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if logger != nil {
@@ -47,11 +59,9 @@ func WSHandler(hub *ws.Hub, validator AuthValidator, logger *zap.Logger, sendQue
 				zap.Bool("has_token_query", r.URL.Query().Get("token") != ""),
 			)
 		}
-
-		// 1) Extract token
 		var token string
-		if auth := r.Header.Get("Authorization"); strings.HasPrefix(strings.ToLower(auth), "bearer ") {
-			token = auth[7:]
+		if authz := r.Header.Get("Authorization"); strings.HasPrefix(strings.ToLower(authz), "bearer ") {
+			token = authz[7:]
 		} else {
 			token = r.URL.Query().Get("token")
 		}
@@ -59,15 +69,12 @@ func WSHandler(hub *ws.Hub, validator AuthValidator, logger *zap.Logger, sendQue
 			http.Error(w, "missing token", http.StatusUnauthorized)
 			return
 		}
-
-		// 2) Validate via injected validator
 		userID, err := validator(token)
 		if err != nil || userID == "" {
 			http.Error(w, "invalid token", http.StatusUnauthorized)
 			return
 		}
 
-		// 3) Upgrade
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			if logger != nil {
@@ -79,18 +86,15 @@ func WSHandler(hub *ws.Hub, validator AuthValidator, logger *zap.Logger, sendQue
 			logger.Info("ws.upgrade.ok", zap.String("user_id", userID))
 		}
 
-		// 4) Register client
 		client := ws.NewClient(conn, userID, hub, sendQueueSize)
 		hub.RegisterClient(client)
 		go client.WritePump()
 		go client.ReadPump()
 
-		// 5) Optional room auto-subscribe
 		if roomID := r.URL.Query().Get("room_id"); roomID != "" {
 			hub.Subscribe(client, roomID)
 		}
 
-		// 6) Ack
 		welcome := ws.NewServerEvent("conn.ack", "server", userID, map[string]interface{}{
 			"connected_at": time.Now().Unix(),
 			"client_id":    client.ID,
@@ -99,11 +103,9 @@ func WSHandler(hub *ws.Hub, validator AuthValidator, logger *zap.Logger, sendQue
 	}
 }
 
-type Handler struct {
-	Svc *Service
+func NewHandlerWithoutScylla(s *Service) *Handler { // if other packages still call it
+	return &Handler{Svc: s, Scylla: nil}
 }
-
-func NewHandler(s *Service) *Handler { return &Handler{Svc: s} }
 
 func (h *Handler) CreateRoom(w http.ResponseWriter, r *http.Request) {
 	uidStr := auth.GetUserID(r)
@@ -116,13 +118,11 @@ func (h *Handler) CreateRoom(w http.ResponseWriter, r *http.Request) {
 		utils.JSONResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid user id"})
 		return
 	}
-
 	var req CreateRoomRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		utils.JSONResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
 		return
 	}
-
 	resp, err := h.Svc.CreateRoom(uid, req)
 	if err != nil {
 		utils.JSONResponse(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -144,15 +144,6 @@ func (h *Handler) ListRooms(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	utils.JSONResponse(w, http.StatusOK, rooms)
-}
-
-// Register under /api/chat
-func (h *Handler) Register(r *mux.Router, sess *gocql.Session) {
-	// protected group already applied by caller
-	r.HandleFunc("/rooms", h.CreateRoom).Methods("POST")
-	r.HandleFunc("/rooms", h.ListRooms).Methods("GET")
-	r.HandleFunc("/rooms/{room_id}/messages", h.SendMessage).Methods("POST")
-	r.HandleFunc("/rooms/{room_id}/messages", h.ListMessages).Methods("GET")
 }
 
 func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
@@ -192,10 +183,22 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ListMessages(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	roomIDStr := vars["room_id"]
+
+	// Accept UUID or slug. Try UUID first.
 	roomID, err := gocql.ParseUUID(roomIDStr)
 	if err != nil {
-		utils.JSONResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid room id"})
-		return
+		// resolve slug -> uuid via rooms table
+		if h.Scylla == nil {
+			utils.JSONResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid room id"})
+			return
+		}
+		var resolved gocql.UUID
+		const q = `SELECT id FROM rooms WHERE slug = ? LIMIT 1`
+		if err2 := h.Scylla.Query(q, roomIDStr).WithContext(r.Context()).Scan(&resolved); err2 != nil {
+			utils.JSONResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid room id"})
+			return
+		}
+		roomID = resolved
 	}
 
 	limit := 50
@@ -204,7 +207,7 @@ func (h *Handler) ListMessages(w http.ResponseWriter, r *http.Request) {
 			limit = v
 		}
 	}
-	before := r.URL.Query().Get("before") // timeuuid string (optional)
+	before := r.URL.Query().Get("before") // optional
 
 	msgs, err := h.Svc.GetMessages(roomID, limit, before)
 	if err != nil {
@@ -213,3 +216,4 @@ func (h *Handler) ListMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	utils.JSONResponse(w, http.StatusOK, msgs)
 }
+	

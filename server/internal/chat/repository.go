@@ -1,6 +1,8 @@
 package chat
 
 import (
+	"time"
+
 	"github.com/gocql/gocql"
 )
 
@@ -12,12 +14,56 @@ func NewRepository(sess *gocql.Session) *Repository {
 	return &Repository{Session: sess}
 }
 
+/*
+Schema seen in cqlsh:
+
+CREATE TABLE chat_app.rooms (
+    room_id uuid PRIMARY KEY,
+    created_at timestamp,
+    created_by uuid,
+    name text
+);
+
+-- messages table (assumed)
+CREATE TABLE chat_app.room_messages (
+    room_id uuid,
+    msg_id timeuuid,
+    user_id uuid,
+    content text,
+    created_at timestamp,
+    PRIMARY KEY (room_id, msg_id)
+) WITH CLUSTERING ORDER BY (msg_id DESC);
+*/
+
+// ---- Domain structs (align with your service/types) ----
+
+type Room struct {
+	RoomID    gocql.UUID `json:"roomId"`
+	Name      string     `json:"name"`
+	CreatedBy gocql.UUID `json:"createdBy"`
+	CreatedAt time.Time  `json:"createdAt"`
+	// Optional if you add it to schema later:
+	Slug string `json:"slug,omitempty"`
+}
+
+type Message struct {
+	RoomID    gocql.UUID `json:"roomId"`
+	MsgID     gocql.UUID `json:"msgId"` // timeuuid
+	UserID    gocql.UUID `json:"userId"`
+	Content   string     `json:"content"`
+	CreatedAt time.Time  `json:"createdAt"`
+}
+
+// ---- Rooms ----
+
+// InsertRoom inserts a room. Works with current schema (no slug).
 func (r *Repository) InsertRoom(room *Room) error {
-	q := `INSERT INTO rooms (room_id, name, created_by, created_at)
-	      VALUES (?, ?, ?, ?)`
+	const q = `INSERT INTO rooms (room_id, name, created_by, created_at)
+	           VALUES (?, ?, ?, ?)`
 	return r.Session.Query(q, room.RoomID, room.Name, room.CreatedBy, room.CreatedAt).Exec()
 }
 
+// ListRooms returns up to limit rooms (no ordering guarantees without extra index).
 func (r *Repository) ListRooms(limit int) ([]Room, error) {
 	if limit <= 0 {
 		limit = 50
@@ -26,7 +72,7 @@ func (r *Repository) ListRooms(limit int) ([]Room, error) {
 		`SELECT room_id, name, created_by, created_at FROM rooms LIMIT ?`, limit,
 	).Iter()
 
-	var out []Room
+	out := make([]Room, 0, limit)
 	var rm Room
 	for iter.Scan(&rm.RoomID, &rm.Name, &rm.CreatedBy, &rm.CreatedAt) {
 		out = append(out, rm)
@@ -37,34 +83,55 @@ func (r *Repository) ListRooms(limit int) ([]Room, error) {
 	return out, nil
 }
 
+// OPTIONAL: If you add `slug text` (+ optional index) to the rooms table,
+// you can use these helpers.
+//   ALTER TABLE rooms ADD slug text;
+//   CREATE INDEX IF NOT EXISTS rooms_slug_idx ON rooms (slug);
+
+func (r *Repository) UpsertRoomSlug(roomID gocql.UUID, slug string) error {
+	const q = `UPDATE rooms SET slug = ? WHERE room_id = ?`
+	return r.Session.Query(q, slug, roomID).Exec()
+}
+
+func (r *Repository) GetRoomIDBySlug(slug string) (gocql.UUID, error) {
+	var id gocql.UUID
+	const q = `SELECT room_id FROM rooms WHERE slug = ? LIMIT 1`
+	if err := r.Session.Query(q, slug).Scan(&id); err != nil {
+		return gocql.UUID{}, err
+	}
+	return id, nil
+}
+
+// ---- Messages ----
+
 func (r *Repository) InsertMessage(m *Message) error {
-	q := `INSERT INTO room_messages (room_id, msg_id, user_id, content, created_at)
-	      VALUES (?, ?, ?, ?, ?)`
+	const q = `INSERT INTO room_messages (room_id, msg_id, user_id, content, created_at)
+	           VALUES (?, ?, ?, ?, ?)`
 	return r.Session.Query(q, m.RoomID, m.MsgID, m.UserID, m.Content, m.CreatedAt).Exec()
 }
 
-// ListMessages returns newest-first; if before != nil, returns messages with msg_id < before
+// ListMessages returns newest-first.
+// If before != nil, returns rows with msg_id < *before.
 func (r *Repository) ListMessages(roomID gocql.UUID, limit int, before *gocql.UUID) ([]Message, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
 
-	var q string
 	var iter *gocql.Iter
 
 	if before != nil {
-		q = `SELECT room_id, msg_id, user_id, content, created_at
-		     FROM room_messages
-		     WHERE room_id = ? AND msg_id < ?
-		     ORDER BY msg_id DESC
-		     LIMIT ?`
+		const q = `SELECT room_id, msg_id, user_id, content, created_at
+		           FROM room_messages
+		           WHERE room_id = ? AND msg_id < ?
+		           ORDER BY msg_id DESC
+		           LIMIT ?`
 		iter = r.Session.Query(q, roomID, *before, limit).Iter()
 	} else {
-		q = `SELECT room_id, msg_id, user_id, content, created_at
-		     FROM room_messages
-		     WHERE room_id = ?
-		     ORDER BY msg_id DESC
-		     LIMIT ?`
+		const q = `SELECT room_id, msg_id, user_id, content, created_at
+		           FROM room_messages
+		           WHERE room_id = ?
+		           ORDER BY msg_id DESC
+		           LIMIT ?`
 		iter = r.Session.Query(q, roomID, limit).Iter()
 	}
 

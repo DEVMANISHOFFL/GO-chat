@@ -165,12 +165,16 @@ func (h *Hub) removeClient(c *Client) {
 
 // --- Core routing ---
 
+
+
 func (h *Hub) routeEvent(ev Event) {
 	// Ensure server timestamp present
 	if ev.ServerTs == 0 {
 		ev.ServerTs = time.Now().Unix()
 	}
 
+
+	
 	switch ev.Type {
 
 	// ===== Presence + typing =====

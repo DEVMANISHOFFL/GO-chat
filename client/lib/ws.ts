@@ -1,203 +1,116 @@
-// src/lib/ws.ts
-import { WSStatus, ServerEvent, ClientEvent } from './ws-types';
-
-export type Listener = (ev: ServerEvent) => void;
+// lib/ws.ts
+export type WSStatus = 'connecting' | 'connected' | 'offline';
+export type Listener = (ev: any) => void;
 
 class WSManager {
   private ws: WebSocket | null = null;
   private url: string | null = null;
-
   private listeners = new Set<Listener>();
-  private statusListeners = new Set<(s: WSStatus) => void>();
   private status: WSStatus = 'offline';
-
+  private statusListeners = new Set<(s: WSStatus) => void>();
+  private backoff = 500; // ms
   private shouldRun = false;
-  private backoff = 500; // ms (capped)
   private pingTimer: any = null;
 
-  // queue events when offline, auto-flush on connect
-  private outbox: ClientEvent[] = [];
-
-  // ---- public API ----
-
-  onEvent(cb: Listener) {
-    this.listeners.add(cb);
-    return () => this.listeners.delete(cb);
+  constructor() {
+    // expose in window for quick testing
+    // @ts-ignore
+    if (typeof window !== 'undefined') window.__wsMgr = this;
   }
 
-  onStatus(cb: (s: WSStatus) => void) {
-    this.statusListeners.add(cb);
-    return () => this.statusListeners.delete(cb);
+  onEvent(cb: Listener) { this.listeners.add(cb); return () => this.listeners.delete(cb); }
+  onStatus(cb: (s: WSStatus) => void) { this.statusListeners.add(cb); return () => this.statusListeners.delete(cb); }
+  getStatus() { return this.status; }
+
+  private setStatus(s: WSStatus) {
+    if (this.status !== s) {
+      this.status = s;
+      for (const cb of this.statusListeners) cb(s);
+    }
   }
 
-  getStatus() {
-    return this.status;
-  }
-
-  isOpen() {
-    return this.ws?.readyState === WebSocket.OPEN;
-  }
-
-  /**
-   * Connect using a FULL URL built by the caller (recommended).
-   * Example:
-   *   const url = buildWsUrl(currentRoomId);
-   *   wsManager.connect(url);
-   */
-  connect(fullUrl?: string) {
-    this.url = fullUrl ?? this.buildWsUrl();
+  connect(url?: string) {
+    if (url) this.url = url;
+    if (!this.url) {
+      console.warn('[WS] connect() called without URL');
+      return;
+    }
     this.shouldRun = true;
+    console.log('[WS] connect() ->', this.url);
     this.open();
   }
 
   disconnect() {
+    console.log('[WS] disconnect()');
     this.shouldRun = false;
+    if (this.ws) { try { this.ws.close(); } catch {} this.ws = null; }
     this.clearPing();
-    this.backoff = 500; // reset backoff on clean shutdown
-    if (this.ws) {
-      // detach handlers to avoid leaks
-      this.ws.onopen = this.ws.onclose = this.ws.onmessage = this.ws.onerror = null;
-      try { this.ws.close(); } catch {}
-      this.ws = null;
-    }
     this.setStatus('offline');
   }
 
-  send(ev: ClientEvent) {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      // queue for later
-      this.outbox.push(ev);
+  send(ev: any) {
+    const open = this.ws && this.ws.readyState === WebSocket.OPEN;
+    if (!open) {
+      console.warn('[WS] send() dropped (not open):', ev);
       return false;
     }
-    try {
-      this.ws.send(JSON.stringify(ev));
-      return true;
-    } catch {
-      this.outbox.push(ev);
-      return false;
-    }
+    const s = JSON.stringify(ev);
+    console.log('[WS][send]', s);
+    this.ws!.send(s);
+    return true;
   }
 
-  // ---- internals ----
-
-  private setStatus(s: WSStatus) {
-    if (this.status === s) return;
-    this.status = s;
-    for (const cb of this.statusListeners) cb(s);
-  }
-
-  private clearPing() {
-    if (this.pingTimer) {
-      clearInterval(this.pingTimer);
-      this.pingTimer = null;
-    }
-  }
+  private clearPing() { if (this.pingTimer) { clearInterval(this.pingTimer); this.pingTimer = null; } }
 
   private open() {
     if (!this.url) return;
-
     this.setStatus('connecting');
-    this.ws = new WebSocket(this.url);
+    console.log('[WS] opening', this.url);
 
-    // onopen
+    try {
+      this.ws = new WebSocket(this.url);
+    } catch (e) {
+      console.error('[WS] ctor error', e);
+      this.scheduleReconnect();
+      return;
+    }
+
     this.ws.onopen = () => {
+      console.info('[WS] connected');
       this.setStatus('connected');
-      this.backoff = 500; // reset for next time
-
-      // flush outbox
-      if (this.outbox.length) {
-        try {
-          for (const ev of this.outbox.splice(0)) {
-            this.ws!.send(JSON.stringify(ev));
-          }
-        } catch {
-          // if flush fails, items already removed; caller will resend on demand
-        }
-      }
-
-      // heartbeat
+      this.backoff = 500;
       this.clearPing();
-      this.pingTimer = setInterval(() => {
-        this.send({ type: 'ping' });
-      }, 25000);
+      this.pingTimer = setInterval(() => this.send({ type: 'ping' }), 25000);
     };
 
-    // onmessage (robust)
-    this.ws.onmessage = async (e) => {
+    this.ws.onmessage = (e) => {
+      console.log('[WS][raw]', e.data);
       try {
-        let text: string;
-        if (typeof e.data === 'string') {
-          text = e.data;
-        } else if (e.data instanceof Blob) {
-          text = await e.data.text();
-        } else {
-          // unsupported frame type
-          // console.warn('[WS] unknown frame type:', typeof e.data);
-          return;
-        }
-
-        if (!text) return;
-
-        let parsed: any;
-        try {
-          parsed = JSON.parse(text);
-        } catch {
-          // console.warn('[WS] non-JSON frame:', text);
-          return;
-        }
-
-        // Alias { payload: {...} } -> { data: {...} } for client convenience
-        if (parsed && parsed.type && parsed.payload && !parsed.data) {
-          parsed.data = parsed.payload;
-        }
-
-        // Only dispatch if there's a type
-        if (!parsed || !parsed.type) {
-          // console.warn('[WS] missing "type" in message:', parsed);
-          return;
-        }
-
-        // fan out
-        for (const cb of this.listeners) cb(parsed as ServerEvent);
+        const ev = JSON.parse(e.data);
+        for (const cb of this.listeners) cb(ev);
       } catch (err) {
-        // console.warn('[WS] onmessage error', err);
+        console.warn('[WS] parse error', err);
       }
     };
 
-    // onclose
     this.ws.onclose = (ev) => {
       this.clearPing();
-      if (!this.shouldRun) {
-        this.setStatus('offline');
-        return;
-      }
+      console.warn('[WS] closed', { code: ev.code, reason: ev.reason, wasClean: ev.wasClean });
+      if (!this.shouldRun) { this.setStatus('offline'); return; }
       this.setStatus('connecting');
-
-      // capped backoff (max 5s)
-      const delay = Math.min(this.backoff, 5000);
-      setTimeout(() => this.open(), delay);
-      this.backoff = Math.min(this.backoff * 2, 5000);
+      this.scheduleReconnect();
     };
 
-    // onerror: rely on onclose for reconnect; keep logging minimal
-    this.ws.onerror = () => {
-      // intentionally empty
+    this.ws.onerror = (e) => {
+      console.error('[WS] error (check server logs for real reason)', e);
     };
   }
 
-  /**
-   * Fallback builder if caller didn't pass a full URL.
-   * Uses env base + token from localStorage.
-   * Does NOT add room_id (your AppShell already does when needed).
-   */
-  private buildWsUrl(): string {
-    const baseRaw = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8080/ws';
-    const base = new URL(baseRaw, window.location.origin);
-    base.search = ''; // strip accidental queries in env
-    const u = new URL(base.toString());
-    const token = (localStorage.getItem('token') || '').trim();
-    if (token) u.searchParams.set('token', token);
-    return u.toString();
+  private scheduleReconnect() {
+    const delay = Math.min(this.backoff, 5000);
+    console.log('[WS] reconnect in', delay, 'ms');
+    setTimeout(() => this.open(), delay);
+    this.backoff *= 2;
   }
 }
 

@@ -1,62 +1,55 @@
-"use client"
+"use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Send, Wifi, WifiOff, Loader2, LogIn, LogOut } from "lucide-react";
-
-/**
- * Minimal, production-ready-ish chat frontend you can drop into a Next.js app.
- * - Tailwind-only UI (purple/white theme)
- * - Clean message list + input + typing indicator
- * - Robust WebSocket hook with auto-reconnect + send queue
- * - JWT via query param (?token=) for now; swap to header/cookie if you proxy
- * - Simple JSON protocol (see PROTOCOL notes at bottom)
- *
- * HOW TO USE (Next.js App Router):
- * 1) Ensure Tailwind is configured.
- * 2) Create a file like app/chat/page.tsx and export default <ChatApp />.
- * 3) Set WS_URL to your backend WS endpoint (wss:// or ws://).
- * 4) Pass a JWT/token (or wire your auth state) and a roomId.
- */
+import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { Send, Wifi, WifiOff, Loader2, LogOut } from "lucide-react";
+import { useAccessToken } from "@/app/hooks/useAccessToken";
 
 // ====== CONFIG ======
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8080/ws"; // change to your Go server ws endpoint
+const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8080/ws";
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 
 // ====== Types ======
-
 type WSStatus = "connecting" | "open" | "closed" | "error";
 
 type Message = {
-  id: string; // server id
-  tempId?: string; // client temp id for optimistic UI
+  id: string;
+  tempId?: string;
   roomId: string;
   userId: string;
   username?: string;
   content: string;
-  createdAt: string; // ISO string
-  mine?: boolean; // UI helper
+  createdAt: string;
+  mine?: boolean;
 };
 
-type Incoming
-  = { type: "history"; roomId: string; messages: Message[] }
+type Incoming =
+  | { type: "history"; roomId: string; messages: Message[] }
   | { type: "message"; message: Message }
   | { type: "ack"; tempId: string; id: string; createdAt?: string }
   | { type: "typing"; roomId: string; userId: string; username?: string }
   | { type: "error"; message: string };
 
-type Outgoing
-  = { type: "join"; roomId: string }
+type Outgoing =
+  | { type: "join"; roomId: string }
   | { type: "message"; roomId: string; content: string; tempId: string }
   | { type: "typing"; roomId: string };
 
 // ====== Utils ======
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
 function classNames(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");
 }
-
 function isoNow() {
   return new Date().toISOString();
+}
+function parseJwt<T = any>(t: string | null): T | null {
+  if (!t) return null;
+  try {
+    const base = t.split(".")[1];
+    const json = atob(base.replace(/-/g, "+").replace(/_/g, "/"));
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
 }
 
 // ====== useWebSocket with auto-reconnect & send queue ======
@@ -69,7 +62,6 @@ function useWebSocket(url: string, token?: string) {
   const connect = async () => {
     try {
       setStatus("connecting");
-      // token via query param (simple). Prefer secure cookie or header via proxy in prod.
       const u = new URL(url);
       if (token) u.searchParams.set("token", token);
       const ws = new WebSocket(u.toString());
@@ -78,27 +70,22 @@ function useWebSocket(url: string, token?: string) {
       ws.onopen = () => {
         setStatus("open");
         reconnectRef.current.attempts = 0;
-        // flush queued frames
         while (queueRef.current.length) {
           const frame = queueRef.current.shift();
           if (frame) ws.send(frame);
         }
       };
 
-      ws.onmessage = () => {
-        // handled externally via subscribe() API below
-      };
-
+      ws.onmessage = () => {};
       ws.onerror = () => setStatus("error");
       ws.onclose = () => {
         setStatus("closed");
         if (!reconnectRef.current.shouldReconnect) return;
-        // exponential backoff
         const attempts = ++reconnectRef.current.attempts;
         const delay = Math.min(1000 * 2 ** attempts, 15000);
         setTimeout(connect, delay);
       };
-    } catch (e) {
+    } catch {
       setStatus("error");
     }
   };
@@ -142,7 +129,7 @@ function useWebSocket(url: string, token?: string) {
 function Bubble({ m }: { m: Message }) {
   const time = new Date(m.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   return (
-    <div className={classNames("flex mb-2", m.mine ? "justify-end" : "justify-start")}>      
+    <div className={classNames("flex mb-2", m.mine ? "justify-end" : "justify-start")}>
       <div
         className={classNames(
           "max-w-[75%] rounded-2xl px-4 py-2 shadow-sm",
@@ -163,9 +150,7 @@ function Bubble({ m }: { m: Message }) {
 function Typing({ who }: { who: string[] }) {
   if (!who.length) return null;
   const label = who.length === 1 ? `${who[0]} is typing…` : `${who.length} people are typing…`;
-  return (
-    <div className="text-xs text-gray-600 px-2 py-1">{label}</div>
-  );
+  return <div className="text-xs text-gray-600 px-2 py-1">{label}</div>;
 }
 
 // ====== Input Row ======
@@ -222,56 +207,45 @@ function InputRow({
 }
 
 // ====== Header ======
-function Header({ status, onLogout, username }: { status: WSStatus; onLogout?: () => void; username?: string }) {
-  const icon = status === "open" ? <Wifi className="h-4 w-4" /> : status === "connecting" ? <Loader2 className="h-4 w-4 animate-spin" /> : <WifiOff className="h-4 w-4" />;
-  const label = status === "open" ? "Online" : status === "connecting" ? "Connecting…" : "Offline";
+  function Header({
+    status,
+    onLogout,
+    username,
+  }: {
+    status: WSStatus;
+    onLogout: () => void;
+    username?: string;
+  }) {
+    console.log('[Header] render', { hasOnLogout: !!onLogout, username });
+
+    const icon =
+      status === "open" ? (
+        <Wifi className="h-4 w-4" />
+      ) : status === "connecting" ? (
+        <Loader2 className="h-4 w-4 animate-spin" />
+      ) : (
+        <WifiOff className="h-4 w-4" />
+      );
+    const label = status === "open" ? "Online" : status === "connecting" ? "Connecting…" : "Offline";
+
   return (
     <div className="flex items-center justify-between p-3 border-b bg-white">
       <div className="flex items-center gap-2">
         <div className="h-8 w-8 rounded-xl bg-purple-600 text-white grid place-items-center font-bold">C</div>
-        <div>
-          <div className="font-semibold">Chat Room</div>
-          <div className="text-xs text-gray-500">{label}</div>
+        <div className="font-semibold flex items-center gap-2">
+          Chat Room
+          <span className="text-gray-500 inline-flex items-center gap-1">{icon}{label}</span>
         </div>
       </div>
       <div className="flex items-center gap-3">
-        {username && <div className="text-sm text-gray-700">Hi, {username}</div>}
-        {onLogout && (
-          <button onClick={onLogout} className="inline-flex items-center gap-1 rounded-xl border px-3 py-1.5 hover:bg-gray-50">
-            <LogOut className="h-4 w-4" />
-            Logout
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ====== Auth stub (replace with your real auth) ======
-function AuthGate({ onLogin }: { onLogin: (token: string, userId: string, username: string) => void }) {
-  const [email, setEmail] = useState("");
-  const [username, setUsername] = useState("");
-  const [token, setToken] = useState("");
-
-  return (
-    <div className="max-w-sm w-full mx-auto mt-24 bg-white rounded-2xl p-6 shadow">
-      <div className="text-center mb-4">
-        <div className="h-12 w-12 rounded-2xl bg-purple-600 text-white grid place-items-center mx-auto font-bold text-lg">C</div>
-        <h1 className="mt-3 text-xl font-semibold">Sign in to Chat</h1>
-        <p className="text-sm text-gray-600">Paste a JWT (temporary) or wire your auth.</p>
-      </div>
-      <div className="space-y-3">
-        <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email (optional)" className="w-full rounded-xl border px-3 py-2" />
-        <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Username (shown in chat)" className="w-full rounded-xl border px-3 py-2" />
-        <input value={token} onChange={(e) => setToken(e.target.value)} placeholder="JWT / Access Token" className="w-full rounded-xl border px-3 py-2" />
+        <div className="text-sm text-gray-700">{username ? `Hi, ${username}` : ""}</div>
         <button
-          onClick={() => {
-            const uid = crypto.randomUUID();
-            onLogin(token || "dev-token", uid, username || email.split("@")[0] || "guest");
-          }}
-          className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-purple-600 px-4 py-2 text-white hover:bg-purple-700"
+          onClick={onLogout}
+          className="inline-flex items-center gap-1 rounded-xl border px-3 py-1.5 hover:bg-gray-50"
+          title="Logout"
         >
-          <LogIn className="h-4 w-4" /> Continue
+          <LogOut className="h-4 w-4" />
+          Logout
         </button>
       </div>
     </div>
@@ -280,37 +254,111 @@ function AuthGate({ onLogin }: { onLogin: (token: string, userId: string, userna
 
 // ====== Main Chat App ======
 export default function ChatApp() {
-  // Replace with your real auth state
-  const [token, setToken] = useState<string | null>(null);
+  const token = useAccessToken(); // auto-proactive refresh
   const [userId, setUserId] = useState<string | null>(null);
   const [username, setUsername] = useState<string | undefined>(undefined);
 
-  const roomId = "general"; // make dynamic if you have multiple rooms
+  // Decode token → userId + immediate fallback username
+  useEffect(() => {
+    if (!token) {
+      const t = setTimeout(() => {
+        if (!localStorage.getItem("token")) window.location.href = "/login";
+      }, 300);
+      return () => clearTimeout(t);
+    }
+    const claims = parseJwt<any>(token);
+    const uid = claims?.user_id || claims?.userId;
+    if (!uid) {
+      console.warn("[auth] JWT missing user_id; redirecting to /login");
+      localStorage.removeItem("token");
+      localStorage.removeItem("refresh_token");
+      localStorage.removeItem("expires_at");
+      window.location.href = "/login";
+      return;
+    }
+    setUserId(uid);
+
+    const fallback =
+      claims?.name ||
+      claims?.username ||
+      claims?.email?.split?.("@")?.[0] ||
+      String(uid).slice(0, 8);
+    setUsername((prev) => prev ?? fallback);
+  }, [token]);
+
+  // Fetch canonical /api/me
+  useEffect(() => {
+    if (!token) return;
+    (async () => {
+      try {
+        const res = await fetch(`${API_URL}/api/me`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const txt = await res.text();
+        if (!res.ok) {
+          console.warn("[api/me] failed", res.status, txt);
+          return;
+        }
+        const me = JSON.parse(txt);
+        setUsername(me.username || me.email?.split?.("@")?.[0] || undefined);
+      } catch (e) {
+        console.warn("[api/me] error", e);
+      }
+    })();
+  }, [token]);
 
   if (!token || !userId) {
-    return (
-      <div className="min-h-screen bg-gradient-to-b from-purple-50 to-white p-4">
-        <AuthGate
-          onLogin={(t, uid, uname) => {
-            setToken(t);
-            setUserId(uid);
-            setUsername(uname);
-          }}
-        />
-      </div>
-    );
+    return <div className="min-h-screen bg-gradient-to-b from-purple-50 to-white" />;
+    // (optional: add a centered spinner)
   }
 
   return (
-    <ChatShell token={token} userId={userId} username={username} roomId={roomId} onLogout={() => { setToken(null); setUserId(null); }} />
+    <ChatShell
+      token={token}
+      userId={userId}
+      username={username}
+      roomId="general"
+    />
   );
 }
 
-function ChatShell({ token, userId, username, roomId, onLogout }: { token: string; userId: string; username?: string; roomId: string; onLogout: () => void; }) {
+function ChatShell({
+  token,
+  userId,
+  username,
+  roomId,
+}: {
+  token: string;
+  userId: string;
+  username?: string;
+  roomId: string;
+}) {
   const { status, send, subscribe } = useWebSocket(WS_URL, token);
   const [messages, setMessages] = useState<Message[]>([]);
   const [typingWho, setTypingWho] = useState<string[]>([]);
   const listRef = useRef<HTMLDivElement>(null);
+
+  // logout handler (always available)
+  const handleLogout = useCallback(async () => {
+    try {
+      const refresh = localStorage.getItem("refresh_token") || "";
+      if (refresh) {
+        await fetch(`${API_URL}/api/logout`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ refresh_token: refresh }),
+        }).catch(() => {});
+      }
+    } finally {
+      localStorage.removeItem("token");
+      localStorage.removeItem("refresh_token");
+      localStorage.removeItem("expires_at");
+      window.location.href = "/login";
+    }
+  }, [token]);
 
   // auto-scroll on new messages
   useEffect(() => {
@@ -326,16 +374,22 @@ function ChatShell({ token, userId, username, roomId, onLogout }: { token: strin
       } else if (json.type === "message") {
         setMessages((cur) => [...cur, { ...json.message, mine: json.message.userId === userId }]);
       } else if (json.type === "ack") {
-        setMessages((cur) => cur.map((m) => (m.tempId === json.tempId ? { ...m, id: json.id, createdAt: json.createdAt || m.createdAt } : m)));
+        setMessages((cur) =>
+          cur.map((m) =>
+            m.tempId === json.tempId ? { ...m, id: json.id, createdAt: json.createdAt || m.createdAt } : m
+          )
+        );
       } else if (json.type === "typing") {
-        // show typing for 3s
         if (json.userId === userId) return;
         setTypingWho((cur) => {
           const name = json.username || "Someone";
           if (cur.includes(name)) return cur;
           return [...cur, name];
         });
-        setTimeout(() => setTypingWho((cur) => cur.filter((n) => n !== (json.username || "Someone"))), 3000);
+        setTimeout(
+          () => setTypingWho((cur) => cur.filter((n) => n !== (json.username || "Someone"))),
+          3000
+        );
       } else if (json.type === "error") {
         console.warn("Server error:", json.message);
       }
@@ -380,7 +434,7 @@ function ChatShell({ token, userId, username, roomId, onLogout }: { token: strin
   return (
     <div className="min-h-screen bg-gradient-to-b from-purple-50 to-white flex flex-col">
       <div className="max-w-4xl w-full mx-auto my-4 rounded-3xl overflow-hidden border shadow-sm bg-white/60 backdrop-blur">
-        <Header status={status} onLogout={onLogout} username={username} />
+        <Header status={status} onLogout={handleLogout} username={username} />
 
         {/* Messages */}
         <div ref={listRef} className="h-[60vh] overflow-y-auto p-3 bg-gradient-to-b from-white to-purple-50">

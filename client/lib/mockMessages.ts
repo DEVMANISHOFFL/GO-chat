@@ -11,8 +11,8 @@ export function generateMockMessages(roomId: string, count = 250): Message[] {
             id: `${roomId}-${i + 1}`,
             roomId,
             author: mine
-                ? { id: 'me', name: 'You', avatarUrl: undefined }
-                : { id: 'u2', name: i % 2 ? 'Avi' : 'Neha', avatarUrl: undefined },
+                ? { id: 'me', username: 'You', avatarUrl: undefined }
+                : { id: 'u2', username: i % 2 ? 'Avi' : 'Neha', avatarUrl: undefined },
             content:
                 i % 5 === 0
                     ? 'Shipping the chat UI shell today. Hooking sockets next!'

@@ -216,4 +216,3 @@ func (h *Handler) ListMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	utils.JSONResponse(w, http.StatusOK, msgs)
 }
-	

@@ -48,10 +48,24 @@ func main() {
 			CreatedAt: createdAt,
 		})
 	}
+
+	lookup := func(ctx context.Context, userID gocql.UUID) (string, error) {
+		var username string
+		// adjust to your actual table/columns
+		err := scyllaSession.
+			Query(`SELECT username FROM users WHERE id = ? LIMIT 1`, userID).
+			Consistency(gocql.One).
+			Scan(&username)
+		if err == gocql.ErrNotFound {
+			return "", nil
+		}
+		return username, err
+	}
+
 	pres := presence.New(redisClient, 45*time.Second)
 
 	chatH := chat.NewHandler(chatSvc, scyllaSession)
-	hub := ws.NewHub(persist)
+	hub := ws.NewHub(persist, lookup)
 	hub.Presence = pres
 	go hub.Run()
 

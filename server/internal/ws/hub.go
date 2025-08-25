@@ -14,6 +14,9 @@ import (
 // PersistMessageFunc allows the hub to persist chat messages.
 type PersistMessageFunc func(roomID, userID gocql.UUID, text string, createdAt time.Time) error
 
+// UserLookupFunc returns a username for a given user UUID.
+type UserLookupFunc func(ctx context.Context, userID gocql.UUID) (username string, err error)
+
 type Hub struct {
 	register   chan *Client
 	unregister chan *Client
@@ -30,12 +33,13 @@ type Hub struct {
 	cancel       context.CancelFunc
 
 	persistMessage PersistMessageFunc
+	userLookup     UserLookupFunc
 	Presence       interface {
 		Touch(ctx context.Context, roomID, userID string) error
 	}
 }
 
-func NewHub(persist PersistMessageFunc) *Hub {
+func NewHub(persist PersistMessageFunc, lookup UserLookupFunc) *Hub {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Hub{
 		register:       make(chan *Client),
@@ -48,6 +52,7 @@ func NewHub(persist PersistMessageFunc) *Hub {
 		ctx:            ctx,
 		cancel:         cancel,
 		persistMessage: persist,
+		userLookup:     lookup,
 	}
 }
 
@@ -289,27 +294,40 @@ func (h *Hub) routeEvent(ev Event) {
 	case "message.send":
 		// Expect ev.Payload: { tempId, roomId, content }
 		tempID, _ := ev.Payload["tempId"].(string)
-		roomID, _ := ev.Payload["roomId"].(string)
+		roomIDStr, _ := ev.Payload["roomId"].(string)
 		content, _ := ev.Payload["content"].(string)
 
-		if ev.From == "" || roomID == "" || content == "" {
+		if ev.From == "" || roomIDStr == "" || content == "" {
+			return
+		}
+
+		// Parse UUIDs
+		rid, err1 := gocql.ParseUUID(roomIDStr)
+		uid, err2 := gocql.ParseUUID(ev.From)
+		if err1 != nil || err2 != nil {
 			return
 		}
 
 		// Persist if configured (optional)
 		if h.persistMessage != nil {
-			if rid, err1 := gocql.ParseUUID(roomID); err1 == nil {
-				if uid, err2 := gocql.ParseUUID(ev.From); err2 == nil {
-					if err := h.persistMessage(rid, uid, content, time.Now().UTC()); err != nil {
-						log.Printf("persistMessage error: %v", err)
-						// Optionally notify sender
-						if c := h.findClientByUser(ev.From); c != nil {
-							h.SafeSend(c, NewServerEvent("error", "server", ev.From, map[string]any{
-								"reason": "persist_failed",
-							}))
-						}
-					}
+			if err := h.persistMessage(rid, uid, content, time.Now().UTC()); err != nil {
+				log.Printf("persistMessage error: %v", err)
+				// Optionally notify sender
+				if c := h.findClientByUser(ev.From); c != nil {
+					h.SafeSend(c, NewServerEvent("error", "server", ev.From, map[string]any{
+						"reason": "persist_failed",
+					}))
 				}
+			}
+		}
+
+		// Lookup author's username (best effort)
+		username := ""
+		if h.userLookup != nil {
+			if u, err := h.userLookup(h.ctx, uid); err == nil {
+				username = u
+			} else {
+				log.Printf("userLookup error for %s: %v", uid.String(), err)
 			}
 		}
 
@@ -317,19 +335,19 @@ func (h *Hub) routeEvent(ev Event) {
 		msgID := uuid.NewString() // If DB returns ID, prefer that
 		createdAt := time.Now().UTC().Format(time.RFC3339Nano)
 
-		out := NewServerEvent("message.created", "server", roomID, map[string]any{
+		out := NewServerEvent("message.created", "server", roomIDStr, map[string]any{
 			"id":        msgID,
 			"tempId":    tempID,
-			"roomId":    roomID,
-			"author":    map[string]any{"id": ev.From, "name": "User"}, // TODO: lookup name
+			"roomId":    roomIDStr,
+			"author":    map[string]any{"id": ev.From, "username": username},
 			"content":   content,
 			"createdAt": createdAt,
 		})
 
 		// Fan out to everyone in the room
-		h.broadcastToChannel(roomID, out, "")
+		h.broadcastToChannel(roomIDStr, out, "")
 		if h.Presence != nil {
-			_ = h.Presence.Touch(h.ctx, roomID, ev.From)
+			_ = h.Presence.Touch(h.ctx, roomIDStr, ev.From)
 		}
 		return
 

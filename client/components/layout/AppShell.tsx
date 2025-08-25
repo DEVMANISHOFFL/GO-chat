@@ -19,6 +19,7 @@ import { wsManager } from '@/lib/ws';
 import type { WSStatus } from '@/lib/ws-types';
 import { makeTempId } from '@/lib/tempId';
 import LogoutButton from '../auth/LogoutButton';
+import { log } from 'console';
 
 
 type MessagesByRoom = Record<string, Message[]>;
@@ -175,35 +176,41 @@ export default function AppShell({
 
         const unsubEvent = wsManager.onEvent((ev: any) => {
             const p = ev?.payload ?? ev?.data ?? {};
+
+            if (ev.type === 'message.created') {
+                console.log('[WS raw message.created]', JSON.stringify(p, null, 2));
+            }
+
             switch (ev.type) {
                 case 'hello':
                 case 'conn.ack':
                     break;
 
                 case 'message.created': {
-                    // Normalize WS payload into { id, roomId, author: { id, username }, ... }
-                    const id = String(p.id ?? p.msgId ?? makeTempId());
-                    const roomId = String(p.roomId ?? joinId);
-                    const createdAt = p.createdAt ?? new Date().toISOString();
-                    const bucket = normalizeKey(roomId);
+                    const { id, tempId, roomId, author, content, createdAt } = p;
+                    const bucket = normalizeKey(String(roomId));
 
-                    const authorId = String(p.author?.id ?? p.userId ?? p.user_id ?? 'unknown');
-                    const username = String(p.author?.username ?? p.author?.name ?? 'Unknown');
+                    const safeAuthor = {
+
+                        id: String(author?.id ?? p.userId ?? p.user_id ?? 'unknown'),
+                        username: String(author?.username ?? author?.name ?? 'Unknown'),
+                    };
 
                     const nextMsg: Message = {
-                        id,
-                        roomId,
-                        author: { id: authorId, username },
-                        content: String(p.content ?? ''),
-                        createdAt,
+                        id: String(id),
+                        roomId: String(roomId),
+                        author: safeAuthor,
+                        content: String(content ?? ''),
+                        createdAt: createdAt ?? new Date().toISOString(),
                     };
+
 
                     setMessagesByRoom((prev) => {
                         const list = prev[bucket] || [];
-                        const tempIdx = p.tempId ? list.findIndex((m) => m.id === p.tempId) : -1;
-                        if (tempIdx >= 0) {
+                        const i = tempId ? list.findIndex((m) => m.id === tempId) : -1;
+                        if (i >= 0) {
                             const next = [...list];
-                            next[tempIdx] = nextMsg;
+                            next[i] = nextMsg;
                             next.sort((a, b) => +new Date(a.createdAt as any) - +new Date(b.createdAt as any));
                             return { ...prev, [bucket]: next };
                         }
@@ -211,6 +218,7 @@ export default function AppShell({
                     });
                     break;
                 }
+
 
                 case 'typing.start': {
                     const roomKey = normalizeKey(String(p.roomId));

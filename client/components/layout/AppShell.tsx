@@ -18,6 +18,7 @@ import type { Room, Message } from '@/lib/types';
 import { wsManager } from '@/lib/ws';
 import type { WSStatus } from '@/lib/ws-types';
 import { makeTempId } from '@/lib/tempId';
+import LogoutButton from '../auth/LogoutButton';
 
 
 type MessagesByRoom = Record<string, Message[]>;
@@ -293,6 +294,9 @@ export default function AppShell({
                         onSearch={() => setQsOpen(true)}
                         onOpenRightPanel={() => setRightOpen(true)}
                     />
+                    <div className="ml-auto">
+                        <LogoutButton />
+                    </div>
                 </div>
 
                 {/* Gate list until identity is known to avoid side flips */}

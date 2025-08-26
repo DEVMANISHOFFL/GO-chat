@@ -137,6 +137,8 @@ export default function AppShell({
     const [typers, setTypers] = useState<TypersMap>({});
     const [status, setStatus] = useState<WSStatus>('offline');
     const [messagesByRoom, setMessagesByRoom] = useState<MessagesByRoom>({});
+    const [editingMessageId, setEditingMessageId] = React.useState<string | null>(null);
+
 
     // derive me after mount, then render the list (prevents first-paint flip)
     const [me, setMe] = useState<{ id: string; username: string } | null>(null);
@@ -348,42 +350,37 @@ export default function AppShell({
             payload: { tempId, roomId: joinId, content },
         } as any);
     };
-
-    const handleEditMessage = async (msg: Message) => {
+    const handleEditMessage = async (msg: Message, nextContent: string) => {
         try {
-            // author-only on client (server enforces 15 min as well)
             if (me?.id !== msg.author?.id) return alert('You can only edit your message.');
-            const joinId = ((active as any)?.uuid as string | undefined) || active?.id || currentRoomId;
-            const current = msg.content ?? '';
-            const next = window.prompt('Edit message:', current);
-            if (next == null) return; // cancelled
-            const trimmed = next.trim();
-            if (!trimmed || trimmed === current) return;
+            const roomKey = ((active as any)?.uuid as string | undefined) || active?.id || currentRoomId;
 
-            await editMessageREST(joinId, msg.id, trimmed);
-            // Optimistic UI: set content + editedAt; WS will confirm
+            // optimistic
             setMessagesByRoom((prev) => {
                 const bucket = currentRoomId;
                 const list = prev[bucket] || [];
                 const i = list.findIndex((m) => m.id === msg.id);
                 if (i < 0) return prev;
                 const nextList = [...list];
-                nextList[i] = { ...nextList[i], content: trimmed, editedAt: new Date().toISOString() };
+                nextList[i] = { ...nextList[i], content: nextContent, editedAt: new Date().toISOString() };
                 return { ...prev, [bucket]: nextList };
             });
-        } catch (e: any) {
+
+            await editMessageREST(roomKey, msg.id, nextContent);
+        } catch (e) {
             console.warn('[Edit] failed', e);
             alert('Edit failed.');
         }
     };
 
+
     const handleDeleteMessage = async (msg: Message) => {
         try {
-            if (me?.id !== msg.author?.id) return alert('You can only delete your message.');
-            if (!window.confirm('Delete this message?')) return;
-            const joinId = ((active as any)?.uuid as string | undefined) || active?.id || currentRoomId;
-            await deleteMessageREST(joinId, msg.id, 'user_delete');
-            // Optimistic UI: mark tombstone; WS will confirm
+            if (me?.id !== msg.author?.id) return; // server still enforces auth
+            const roomKey =
+                ((active as any)?.uuid as string | undefined) || active?.id || currentRoomId;
+
+            // Optimistic tombstone
             setMessagesByRoom((prev) => {
                 const bucket = currentRoomId;
                 const list = prev[bucket] || [];
@@ -391,12 +388,19 @@ export default function AppShell({
                 if (i < 0) return prev;
                 const now = new Date().toISOString();
                 const nextList = [...list];
-                nextList[i] = { ...nextList[i], deletedAt: now, deletedBy: me?.id, deletedReason: 'user_delete' };
+                nextList[i] = {
+                    ...nextList[i],
+                    deletedAt: now,
+                    deletedBy: me?.id,
+                    deletedReason: 'user_delete',
+                };
                 return { ...prev, [bucket]: nextList };
             });
-        } catch (e: any) {
-            console.warn('[Delete] failed', e);
-            alert('Delete failed.');
+
+            await deleteMessageREST(roomKey, msg.id, 'user_delete');
+        } catch (e) {
+            // optional: rollback or toast; staying silent per your request
+            // console.warn('[Delete] failed', e);
         }
     };
 
@@ -435,6 +439,9 @@ export default function AppShell({
                     meId={me!.id}
                     onEditMessage={handleEditMessage}
                     onDeleteMessage={handleDeleteMessage}
+                    editingMessageId={editingMessageId}    // NEW
+                    onRequestEdit={(id) => setEditingMessageId(id)}  // NEW
+                    onEndEdit={() => setEditingMessageId(null)}      // NEW
                 /> : <div className="flex-1" />}
 
                 <TypingIndicator names={typingNames} />

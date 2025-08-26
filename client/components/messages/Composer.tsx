@@ -52,11 +52,17 @@ export default function Composer({ roomId, placeholder, disabled, sending, onSen
     }, [onTypingStart, onTypingStop]);
 
 
-    const handleKeyDown: React.KeyboardEventHandler<HTMLTextAreaElement> = (e) => {
+    const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
-            doSend();
+
+            const trimmed = value.trim();
+            if (trimmed && !disabled) {
+                onSend({text:trimmed});       // <- call your send callback
+                setValue('');          // clear textarea
+            }
         }
+        // if Shift+Enter → allow newline (do nothing, browser inserts '\n')
     };
 
     const doSend = () => {

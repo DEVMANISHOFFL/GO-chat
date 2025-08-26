@@ -78,13 +78,19 @@ export default function MessageList({
     newAnchorId,
     onEditMessage,
     onDeleteMessage,
+    editingMessageId,
+    onRequestEdit,
+    onEndEdit,
 }: {
     items: Message[];
     meId: string;
     highlightId?: string;
     newAnchorId?: string;
-    onEditMessage?: (msg: Message) => void;
+    onEditMessage?: (msg: Message, newContent: string) => void;   // ⬅️ changed
     onDeleteMessage?: (msg: Message) => void;
+    editingMessageId?: string | null;
+    onRequestEdit?: (id: string) => void;
+    onEndEdit?: () => void;
 }) {
     const [atBottom, setAtBottom] = useState(true);
     const parentRef = useRef<HTMLDivElement | null>(null);
@@ -190,10 +196,14 @@ export default function MessageList({
                                                 editedAt={(row.msg as any).editedAt}
                                                 deletedAt={(row.msg as any).deletedAt}
                                                 deletedReason={(row.msg as any).deletedReason}
-                                                canEdit={row.mine && !row.msg.deletedAt}           // simple client-side guard
+                                                canEdit={row.mine && !row.msg.deletedAt && !row.msg.editedAt}  // one edit only
                                                 canDelete={row.mine && !row.msg.deletedAt}
-                                                onEdit={() => onEditMessage?.(row.msg)}
+                                                isEditing={editingMessageId === row.msg.id}                     // NEW
+                                                editLockActive={!!editingMessageId && editingMessageId !== row.msg.id} // NEW
+                                                onEdit={(next) => onEditMessage?.(row.msg, next)}               // NEW signature
                                                 onDelete={() => onDeleteMessage?.(row.msg)}
+                                                onRequestEdit={() => onRequestEdit?.(row.msg.id)}               // NEW
+                                                onEndEdit={() => onEndEdit?.()}
                                                 showHeader={(row as any).showHeader}
                                             />
                                         </div>

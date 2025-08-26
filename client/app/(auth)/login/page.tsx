@@ -24,9 +24,8 @@ export default function LoginPage() {
         email_or_username,
         password,
       });
-      // ✅ store token, refresh, and expiry
       saveTokens(token, refresh_token, expires_at);
-      window.location.href = '/'; // redirect to chat home
+      window.location.href = '/'; 
     } catch (e: any) {
       setErr(e?.message || 'Login failed');
     } finally {

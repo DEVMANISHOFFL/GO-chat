@@ -16,14 +16,14 @@ export default function MessageItem({
     editedAt,
     deletedAt,
     deletedReason,
-    canEdit,          // already includes "one edit only" logic from parent
+    canEdit,          
     canDelete,
-    isEditing,        // global lock: this row currently editing?
-    editLockActive,   // some other row is editing now
-    onEdit,           // (next: string) => void
+    isEditing,       
+    editLockActive,   
+    onEdit,          
     onDelete,
-    onRequestEdit,    // request to start editing this row
-    onEndEdit,        // signal that editing ended (save or cancel)
+    onRequestEdit,  
+    onEndEdit,      
     showHeader,
 }: {
     id: string;
@@ -54,20 +54,17 @@ export default function MessageItem({
         setTimeout(() => onDelete?.(), 0);
     };
 
-    // context / long-press menu
     const [menuOpen, setMenuOpen] = React.useState(false);
     const [menuPos, setMenuPos] = React.useState<{ x: number; y: number }>({ x: 0, y: 0 });
     const containerRef = React.useRef<HTMLDivElement | null>(null);
 
-    // inline editor
     const [editValue, setEditValue] = React.useState(content);
     React.useEffect(() => setEditValue(content), [content]);
 
-    // start edit handler
     const beginEdit = () => {
-        if (!canEdit) return;                // already edited or not allowed
-        if (editLockActive) return;          // someone else is editing
-        onRequestEdit?.();                   // claim the global lock
+        if (!canEdit) return;                
+        if (editLockActive) return;          
+        onRequestEdit?.();                  
         setMenuOpen(false);
     };
 
@@ -97,7 +94,6 @@ export default function MessageItem({
     };
     const stopLP = () => { if (lp.current) { clearTimeout(lp.current); lp.current = null; } };
 
-    // right-click
     const onCtx = (e: React.MouseEvent) => {
         if (isDeleted || (!canEdit && !canDelete)) return;
         e.preventDefault();
@@ -105,7 +101,6 @@ export default function MessageItem({
         setMenuOpen(true);
     };
 
-    // outside/esc close for menu
     React.useEffect(() => {
         if (!menuOpen) return;
         const onDoc = (e: MouseEvent) => {
@@ -153,7 +148,7 @@ export default function MessageItem({
                             </p>
                         ) : isEditing ? (
                             <div className="flex items-end gap-2">
-                                {/* Instagram-like input: rounded, subtle border, expands with content */}
+                                {/* input: rounded, subtle border, expands with content */}
                                 <div className="flex-1 rounded-2xl border bg-background px-3 py-2">
                                     <textarea
                                         className="block w-full resize-none bg-transparent text-sm leading-6 outline-none"
@@ -201,7 +196,6 @@ export default function MessageItem({
                         )}
                     </div>
 
-                    {/* If user tries to edit again after first edit, hint why it's disabled */}
                     {/* {!isDeleted && editedAt && mine && (
             <div className="mt-1 text-[11px] text-muted-foreground">You’ve already edited this once.</div>
           )} */}

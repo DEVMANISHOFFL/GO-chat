@@ -1,4 +1,3 @@
-// src/app/AppShell.tsx
 'use client';
 
 import React, { PropsWithChildren, useEffect, useMemo, useState } from 'react';
@@ -26,12 +25,12 @@ type MessagesByRoom = Record<string, Message[]>;
 type TypersMap = Record<string, string>;
 
 type ApiMessageDb = {
-    roomId: string;     // UUID in DB
-    msgId: string;      // timeuuid
-    userId: string;     // USER UUID
-    username: string;   // <- server should send this
+    roomId: string;     
+    msgId: string;      
+    userId: string;     
+    username: string;   
     content: string;
-    createdAt: string | number; // accept ISO or ms; we normalize later
+    createdAt: string | number; 
 };
 
 const norm = (s?: string | null) => (s ?? '').trim().toLowerCase();
@@ -124,7 +123,7 @@ function buildWsUrl(roomJoinId: string) {
 
 export default function AppShell({
     rooms,
-    currentRoomId, // slug like "general"
+    currentRoomId, 
     onSelectRoom,
     children,
 }: PropsWithChildren & {
@@ -140,14 +139,12 @@ export default function AppShell({
     const [editingMessageId, setEditingMessageId] = React.useState<string | null>(null);
 
 
-    // derive me after mount, then render the list (prevents first-paint flip)
     const [me, setMe] = useState<{ id: string; username: string } | null>(null);
     useEffect(() => {
         setMe(getMeFromToken());
     }, []);
     const meReady = !!me?.id;
 
-    // Build maps between slug <-> uuid for reliable normalization
     const { active, uuidToSlug } = useMemo(() => {
         const uuidToSlug = new Map<string, string>();
         for (const r of rooms) {
@@ -158,12 +155,10 @@ export default function AppShell({
         return { active: rooms.find((r) => r.id === currentRoomId), uuidToSlug };
     }, [rooms, currentRoomId]);
 
-    // Normalize any incoming room identifier (UUID or slug) to the visible slug key
     const normalizeKey = (rid: string) => uuidToSlug.get(rid) || rid;
 
     const items = messagesByRoom[currentRoomId] || [];
 
-    // 1) Load history (prefer UUID) — only after me is known
     useEffect(() => {
         if (!meReady) return;
         const ctrl = new AbortController();
@@ -197,10 +192,8 @@ export default function AppShell({
             }
         })();
         return () => ctrl.abort();
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [meReady, currentRoomId, (active as any)?.uuid, active?.id]);
 
-    // 2) WebSocket lifecycle — only after me is known
     useEffect(() => {
         if (!meReady) return;
         const joinId =
@@ -314,14 +307,14 @@ export default function AppShell({
             }
         });
 
-        setTypers({}); // reset when switching rooms
+        setTypers({}); 
 
         return () => {
             unsubStatus();
             unsubEvent();
             wsManager.disconnect();
         };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
+  
     }, [meReady, currentRoomId, (active as any)?.uuid, active?.id]);
 
     // --- send helpers ---
@@ -330,16 +323,15 @@ export default function AppShell({
 
         const tempId = makeTempId();
         const joinId =
-            ((active as any)?.uuid as string | undefined) || active?.id || currentRoomId; // server expects this
-        const visibleBucket = currentRoomId; // store under slug for UI
+            ((active as any)?.uuid as string | undefined) || active?.id || currentRoomId; 
+        const visibleBucket = currentRoomId; 
 
-        // optimistic insert
         setMessagesByRoom((prev) => ({
             ...prev,
             [visibleBucket]: applyInsert(prev[visibleBucket] || [], {
                 id: tempId,
                 roomId: joinId,
-                author: me, // { id, username }
+                author: me, 
                 content,
                 createdAt: new Date().toISOString(),
             }),
@@ -355,7 +347,6 @@ export default function AppShell({
             if (me?.id !== msg.author?.id) return alert('You can only edit your message.');
             const roomKey = ((active as any)?.uuid as string | undefined) || active?.id || currentRoomId;
 
-            // optimistic
             setMessagesByRoom((prev) => {
                 const bucket = currentRoomId;
                 const list = prev[bucket] || [];
@@ -376,11 +367,10 @@ export default function AppShell({
 
     const handleDeleteMessage = async (msg: Message) => {
         try {
-            if (me?.id !== msg.author?.id) return; // server still enforces auth
+            if (me?.id !== msg.author?.id) return; 
             const roomKey =
                 ((active as any)?.uuid as string | undefined) || active?.id || currentRoomId;
 
-            // Optimistic tombstone
             setMessagesByRoom((prev) => {
                 const bucket = currentRoomId;
                 const list = prev[bucket] || [];
@@ -399,8 +389,7 @@ export default function AppShell({
 
             await deleteMessageREST(roomKey, msg.id, 'user_delete');
         } catch (e) {
-            // optional: rollback or toast; staying silent per your request
-            // console.warn('[Delete] failed', e);
+          
         }
     };
 
@@ -433,15 +422,14 @@ export default function AppShell({
                     </div>
                 </div>
 
-                {/* Gate list until identity is known to avoid side flips */}
                 {meReady ? <MessageList
                     items={items}
                     meId={me!.id}
                     onEditMessage={handleEditMessage}
                     onDeleteMessage={handleDeleteMessage}
-                    editingMessageId={editingMessageId}    // NEW
-                    onRequestEdit={(id) => setEditingMessageId(id)}  // NEW
-                    onEndEdit={() => setEditingMessageId(null)}      // NEW
+                    editingMessageId={editingMessageId}    
+                    onRequestEdit={(id) => setEditingMessageId(id)}  
+                    onEndEdit={() => setEditingMessageId(null)}      
                 /> : <div className="flex-1" />}
 
                 <TypingIndicator names={typingNames} />

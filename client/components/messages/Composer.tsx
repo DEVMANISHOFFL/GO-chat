@@ -10,7 +10,7 @@ function useAutosizeTextArea(textareaRef: HTMLTextAreaElement | null, value: str
         if (!textareaRef) return;
         textareaRef.style.height = '0px';
         const scrollH = textareaRef.scrollHeight;
-        const max = 200; // px cap
+        const max = 200; 
         textareaRef.style.height = Math.min(scrollH, max) + 'px';
     }, [textareaRef, value]);
 }
@@ -38,7 +38,6 @@ export default function Composer({ roomId, placeholder, disabled, sending, onSen
     useEffect(() => setDraft(roomId, value), [roomId, value]);
 
 
-    // reset on room change (load existing)
     useEffect(() => {
         setValue(getDraft(roomId));
         setFiles([]);
@@ -58,11 +57,10 @@ export default function Composer({ roomId, placeholder, disabled, sending, onSen
 
             const trimmed = value.trim();
             if (trimmed && !disabled) {
-                onSend({text:trimmed});       // <- call your send callback
-                setValue('');          // clear textarea
+                onSend({text:trimmed});     
+                setValue('');          
             }
         }
-        // if Shift+Enter → allow newline (do nothing, browser inserts '\n')
     };
 
     const doSend = () => {
@@ -84,7 +82,6 @@ export default function Composer({ roomId, placeholder, disabled, sending, onSen
 
     return (
         <div className="border-t bg-background p-3">
-            {/* attachments preview (simple chips) */}
             {!!files.length && (
                 <div className="mx-auto mb-2 flex max-w-3xl flex-wrap gap-2">
                     {files.map((f, i) => (

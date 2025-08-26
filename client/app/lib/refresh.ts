@@ -17,7 +17,7 @@ export async function attemptRefresh(): Promise<RefreshResp | null> {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`, // NOTE: must still be valid
+      Authorization: `Bearer ${token}`, 
     },
     body: JSON.stringify({ refresh_token: refresh }),
   });

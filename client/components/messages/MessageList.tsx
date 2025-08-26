@@ -86,7 +86,7 @@ export default function MessageList({
     meId: string;
     highlightId?: string;
     newAnchorId?: string;
-    onEditMessage?: (msg: Message, newContent: string) => void;   // ⬅️ changed
+    onEditMessage?: (msg: Message, newContent: string) => void;
     onDeleteMessage?: (msg: Message) => void;
     editingMessageId?: string | null;
     onRequestEdit?: (id: string) => void;
@@ -186,7 +186,7 @@ export default function MessageList({
                                                 id={row.msg.id}
                                                 author={{
                                                     username: (row.msg.author as any).username,
-                                                    avatarUrl: (row as any).avatarUrl, // ✅ keep for mine too
+                                                    avatarUrl: (row as any).avatarUrl, 
                                                 } as any}
 
                                                 content={row.msg.content}
@@ -196,13 +196,13 @@ export default function MessageList({
                                                 editedAt={(row.msg as any).editedAt}
                                                 deletedAt={(row.msg as any).deletedAt}
                                                 deletedReason={(row.msg as any).deletedReason}
-                                                canEdit={row.mine && !row.msg.deletedAt && !row.msg.editedAt}  // one edit only
+                                                canEdit={row.mine && !row.msg.deletedAt && !row.msg.editedAt} 
                                                 canDelete={row.mine && !row.msg.deletedAt}
-                                                isEditing={editingMessageId === row.msg.id}                     // NEW
-                                                editLockActive={!!editingMessageId && editingMessageId !== row.msg.id} // NEW
-                                                onEdit={(next) => onEditMessage?.(row.msg, next)}               // NEW signature
+                                                isEditing={editingMessageId === row.msg.id}                   
+                                                editLockActive={!!editingMessageId && editingMessageId !== row.msg.id}
+                                                onEdit={(next) => onEditMessage?.(row.msg, next)}             
                                                 onDelete={() => onDeleteMessage?.(row.msg)}
-                                                onRequestEdit={() => onRequestEdit?.(row.msg.id)}               // NEW
+                                                onRequestEdit={() => onRequestEdit?.(row.msg.id)}            
                                                 onEndEdit={() => onEndEdit?.()}
                                                 showHeader={(row as any).showHeader}
                                             />

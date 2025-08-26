@@ -9,10 +9,9 @@ import (
 
 var Ctx = context.Background()
 
-// InitRedis initializes and returns a Redis client
 func InitRedis(addr string) *redis.Client {
 	rdb := redis.NewClient(&redis.Options{
-		Addr: addr, // e.g., "localhost:6379"
+		Addr: addr,
 	})
 	_, err := rdb.Ping(Ctx).Result()
 	if err != nil {

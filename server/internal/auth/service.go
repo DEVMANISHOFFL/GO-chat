@@ -33,14 +33,12 @@ func NewService(repo *Repository) *Service {
 }
 
 func (s *Service) Signup(req SignupRequest) (*SignupResponse, error) {
-	// validations unchanged …
 
 	hashedPassword, err := utils.HashPassword(req.Password)
 	if err != nil {
 		return nil, err
 	}
 
-	// prepare user
 	u := &User{
 		ID:        gocql.TimeUUID(),
 		Username:  req.Username,
@@ -50,7 +48,6 @@ func (s *Service) Signup(req SignupRequest) (*SignupResponse, error) {
 		UpdatedAt: time.Now().UTC(),
 	}
 
-	// 1) reserve username & email (LWT)
 	if ok, err := s.Repo.ReserveUsername(u.Username, u.ID); err != nil {
 		return nil, err
 	} else if !ok {
@@ -64,15 +61,13 @@ func (s *Service) Signup(req SignupRequest) (*SignupResponse, error) {
 		return nil, errors.New("email already registered")
 	}
 
-	// 2) insert user row
 	if err := s.Repo.InsertUser(u); err != nil {
-		// rollback reservations if user insert fails
+
 		_ = s.Repo.ReleaseUsername(u.Username)
 		_ = s.Repo.ReleaseEmail(u.Email)
 		return nil, err
 	}
 
-	// success
 	return &SignupResponse{
 		ID:       u.ID.String(),
 		Username: u.Username,
@@ -122,13 +117,12 @@ func (s *Service) Refresh(userIDStr string, req RefreshRequest) (*LoginResponse,
 	if req.RefreshToken == "" {
 		return nil, errors.New("missing refresh_token")
 	}
-	// parse userID from JWT claims (handler will pass it) or from payload if you prefer
+
 	userID, err := gocql.ParseUUID(userIDStr)
 	if err != nil {
 		return nil, errors.New("invalid user id")
 	}
 
-	// 1) find refresh token
 	row, err := s.Repo.GetRefreshTokenByToken(userID, req.RefreshToken)
 	if err != nil {
 		return nil, err
@@ -136,19 +130,17 @@ func (s *Service) Refresh(userIDStr string, req RefreshRequest) (*LoginResponse,
 	if row == nil {
 		return nil, errors.New("refresh token not found")
 	}
-	// 2) check expiry
+
 	if time.Now().After(row.ExpiresAt) {
-		_ = s.Repo.DeleteRefreshToken(userID, row.RefreshID) // cleanup
+		_ = s.Repo.DeleteRefreshToken(userID, row.RefreshID)
 		return nil, errors.New("refresh token expired")
 	}
 
-	// 3) issue new JWT
 	accessToken, err := utils.GenerateJWT(userID.String(), s.JWTExpiry)
 	if err != nil {
 		return nil, err
 	}
 
-	// 4) (optional) rotate refresh token: create a new one and delete the old one
 	newRT, err := GenerateRefreshToken(userID)
 	if err != nil {
 		return nil, err

@@ -79,23 +79,21 @@ func (s *Service) GetMessages(roomID gocql.UUID, limit int, beforeStr string) ([
 	return s.Repo.ListMessages(roomID, limit, before)
 }
 
-// --- NEW: 15-minute edit window check ---
 func (s *Service) EditMessage(roomID, msgID, userID gocql.UUID, newContent string) (*EditMessageResult, error) {
 	newContent = strings.TrimSpace(newContent)
 	if len(newContent) == 0 || len(newContent) > 4000 {
 		return nil, errors.New("invalid content")
 	}
 
-	// load existing
 	msg, err := s.Repo.GetMessage(roomID, msgID)
 	if err != nil {
 		return nil, err
 	}
-	// disallow editing deleted messages
+
 	if msg.DeletedAt != nil {
 		return nil, errors.New("message deleted")
 	}
-	// ownership + time window
+
 	if msg.UserID != userID {
 		return nil, errors.New("forbidden")
 	}
@@ -116,12 +114,12 @@ func (s *Service) EditMessage(roomID, msgID, userID gocql.UUID, newContent strin
 }
 
 func (s *Service) DeleteMessage(roomID, msgID, userID gocql.UUID, reason string) (*DeleteMessageResult, error) {
-	// load existing
+
 	msg, err := s.Repo.GetMessage(roomID, msgID)
 	if err != nil {
 		return nil, err
 	}
-	// already deleted: idempotent OK
+
 	if msg.DeletedAt != nil {
 		return &DeleteMessageResult{
 			RoomID:        roomID.String(),
@@ -131,7 +129,7 @@ func (s *Service) DeleteMessage(roomID, msgID, userID gocql.UUID, reason string)
 			DeletedReason: msg.DeletedReason,
 		}, nil
 	}
-	// allow author (and admins—if you add RBAC later)
+
 	if msg.UserID != userID {
 		return nil, errors.New("forbidden")
 	}

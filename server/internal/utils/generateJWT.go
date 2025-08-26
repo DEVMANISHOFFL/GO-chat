@@ -7,7 +7,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-var JwtKey = []byte("SECRET_KEY") // TODO: read from env
+var JwtKey = []byte("SECRET_KEY")
 
 func GenerateJWT(userID string, expiry time.Duration) (string, error) {
 	claims := jwt.MapClaims{
@@ -22,7 +22,7 @@ func GenerateJWT(userID string, expiry time.Duration) (string, error) {
 
 func ValidateJWT(tokenStr string) (jwt.MapClaims, error) {
 	token, err := jwt.Parse(tokenStr, func(t *jwt.Token) (any, error) {
-		// harden: reject unexpected algs
+
 		if t.Method != jwt.SigningMethodHS256 {
 			return nil, errors.New("unexpected signing method")
 		}

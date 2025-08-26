@@ -12,7 +12,6 @@ import (
 
 type PersistMessageFunc func(roomID, userID gocql.UUID, text string, createdAt time.Time) (gocql.UUID, error)
 
-// UserLookupFunc returns a username for a given user UUID.
 type UserLookupFunc func(ctx context.Context, userID gocql.UUID) (username string, err error)
 
 type Hub struct {
@@ -57,7 +56,6 @@ func NewHub(persist PersistMessageFunc, lookup UserLookupFunc) *Hub {
 func (h *Hub) RegisterClient(c *Client)   { h.register <- c }
 func (h *Hub) UnregisterClient(c *Client) { h.unregister <- c }
 
-// helper: first client ID for a user (to exclude echo to sender in room fanout)
 func (h *Hub) firstClientIDForUser(userID string) string {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -69,7 +67,6 @@ func (h *Hub) firstClientIDForUser(userID string) string {
 	return ""
 }
 
-// internal broadcast entry point (global/user/room)
 func (h *Hub) broadcast(ev Event) {
 	if ev.To == "" {
 		h.broadcastAll(ev)
@@ -81,7 +78,6 @@ func (h *Hub) broadcast(ev Event) {
 	h.broadcastToChannel(ev.To, ev, "")
 }
 
-// Run starts the hub loop.
 func (h *Hub) Run() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
@@ -105,20 +101,17 @@ func (h *Hub) Run() {
 			h.routeEvent(ev)
 
 		case <-ticker.C:
-			// periodic maintenance (optional)
+
 		}
 	}
 }
 
-// Shutdown gracefully stops the hub (call from server shutdown path).
 func (h *Hub) Shutdown(ctx context.Context) {
 	h.shutdownOnce.Do(func() {
 		h.cancel()
 		<-ctx.Done()
 	})
 }
-
-// --- Client registry / rooms ---
 
 func (h *Hub) addClient(c *Client) {
 	h.mu.Lock()
@@ -133,7 +126,6 @@ func (h *Hub) addClient(c *Client) {
 		h.userConns[c.UserID][c] = struct{}{}
 	}
 
-	// Optional: send conn.ack
 	ack := NewServerEvent("conn.ack", "server", c.UserID, map[string]any{
 		"client_id":    c.ID,
 		"connected_at": time.Now().Unix(),
@@ -166,8 +158,6 @@ func (h *Hub) removeClient(c *Client) {
 	}
 }
 
-// --- Core routing ---
-
 func getString(m map[string]any, key string) (string, bool) {
 	if v, ok := m[key]; ok {
 		if s, ok2 := v.(string); ok2 {
@@ -178,14 +168,13 @@ func getString(m map[string]any, key string) (string, bool) {
 }
 
 func (h *Hub) routeEvent(ev Event) {
-	// Ensure server timestamp present
+
 	if ev.ServerTs == 0 {
 		ev.ServerTs = time.Now().Unix()
 	}
 
 	switch ev.Type {
 
-	// ===== Presence + typing =====
 	case "typing.start":
 		if ev.From == "" || ev.To == "" {
 			return
@@ -222,7 +211,6 @@ func (h *Hub) routeEvent(ev Event) {
 		}
 		return
 
-	// ===== Channel membership (server-side subscribe API) =====
 	case "channel.subscribe":
 		h.mu.RLock()
 		var cli *Client
@@ -270,9 +258,8 @@ func (h *Hub) routeEvent(ev Event) {
 		}
 		return
 
-	// ===== Legacy: chat.message (kept for compatibility) =====
 	case "message.send":
-		// Expect ev.Payload: { tempId, roomId, content }
+
 		tempID, _ := ev.Payload["tempId"].(string)
 		roomIDStr, _ := ev.Payload["roomId"].(string)
 		content, _ := ev.Payload["content"].(string)
@@ -281,14 +268,12 @@ func (h *Hub) routeEvent(ev Event) {
 			return
 		}
 
-		// Parse UUIDs
 		rid, err1 := gocql.ParseUUID(roomIDStr)
 		uid, err2 := gocql.ParseUUID(ev.From)
 		if err1 != nil || err2 != nil {
 			return
 		}
 
-		// Persist and get the REAL DB message id
 		var dbMsgID gocql.UUID
 		if h.persistMessage != nil {
 			id, err := h.persistMessage(rid, uid, content, time.Now().UTC())
@@ -306,7 +291,6 @@ func (h *Hub) routeEvent(ev Event) {
 			dbMsgID = gocql.TimeUUID()
 		}
 
-		// Lookup author's username (best effort)
 		username := ""
 		if h.userLookup != nil {
 			if u, err := h.userLookup(h.ctx, uid); err == nil {
@@ -316,10 +300,9 @@ func (h *Hub) routeEvent(ev Event) {
 			}
 		}
 
-		// Build "message.created" with the DB id
 		createdAt := time.Now().UTC().Format(time.RFC3339Nano)
 		out := NewServerEvent("message.created", "server", roomIDStr, map[string]any{
-			"id":        dbMsgID.String(), // <-- important: DB id
+			"id":        dbMsgID.String(),
 			"tempId":    tempID,
 			"roomId":    roomIDStr,
 			"author":    map[string]any{"id": ev.From, "username": username},
@@ -327,7 +310,6 @@ func (h *Hub) routeEvent(ev Event) {
 			"createdAt": createdAt,
 		})
 
-		// Fan out
 		h.broadcastToChannel(roomIDStr, out, "")
 		if h.Presence != nil {
 			_ = h.Presence.Touch(h.ctx, roomIDStr, ev.From)
@@ -335,12 +317,10 @@ func (h *Hub) routeEvent(ev Event) {
 		return
 
 	default:
-		// Fallback: global/user/room broadcast depending on ev.To
+
 		h.broadcast(ev)
 	}
 }
-
-// --- Broadcast helpers ---
 
 func (h *Hub) broadcastAll(ev Event) {
 	h.mu.RLock()
@@ -363,7 +343,6 @@ func (h *Hub) broadcastToUser(userID string, ev Event) bool {
 	return true
 }
 
-// excludeClientID: if non-empty, skip sending to that client (useful to avoid echoing sender's typing)
 func (h *Hub) broadcastToChannel(channelID string, ev Event, excludeClientID string) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -387,7 +366,7 @@ func (h *Hub) SafeSend(c *Client, ev Event) {
 	select {
 	case c.send <- b:
 	default:
-		// queue full → close to protect hub health
+
 		close(c.send)
 		h.unregister <- c
 	}
@@ -429,7 +408,6 @@ func (h *Hub) drainAndClose() {
 	}
 }
 
-// findClientByUser returns any active client pointer for a given userID.
 func (h *Hub) findClientByUser(userID string) *Client {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -445,6 +423,6 @@ func (h *Hub) EmitSystem(ev Event) {
 	select {
 	case h.system <- ev:
 	default:
-		// drop if system queue is full to avoid deadlock
+
 	}
 }

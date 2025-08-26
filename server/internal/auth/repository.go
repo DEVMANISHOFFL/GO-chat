@@ -80,13 +80,13 @@ func (r *Repository) GetUserByEmailOrUsername(emailOrUsername string) (*User, er
 	var err error
 
 	if strings.Contains(emailOrUsername, "@") {
-		// lookup by email
+
 		err = r.Session.Query(
 			`SELECT user_id FROM users_by_email WHERE email = ?`,
 			emailOrUsername,
 		).Consistency(gocql.Quorum).Scan(&userID)
 	} else {
-		// lookup by username
+
 		err = r.Session.Query(
 			`SELECT user_id FROM users_by_username WHERE username = ?`,
 			emailOrUsername,
@@ -153,7 +153,6 @@ func (r *Repository) DeleteRefreshToken(userID, refreshID gocql.UUID) error {
 	return r.Session.Query(q, userID, refreshID).Exec()
 }
 
-// DeleteRefreshByToken removes a specific refresh token for a user.
 func (r *Repository) DeleteRefreshByToken(userID gocql.UUID, token string) error {
 	rt, err := r.GetRefreshTokenByToken(userID, token)
 	if err != nil {
@@ -165,8 +164,6 @@ func (r *Repository) DeleteRefreshByToken(userID gocql.UUID, token string) error
 	return r.DeleteRefreshToken(userID, rt.RefreshID)
 }
 
-// ReserveEmail tries to claim an email -> user_id using LWT.
-// Returns true if reserved successfully.
 func (r *Repository) ReserveEmail(email string, id gocql.UUID) (bool, error) {
 	var existingEmail string
 	var existingID gocql.UUID
@@ -177,7 +174,6 @@ func (r *Repository) ReserveEmail(email string, id gocql.UUID) (bool, error) {
 	return applied, err
 }
 
-// ReserveUsername tries to claim a username -> user_id using LWT.
 func (r *Repository) ReserveUsername(username string, id gocql.UUID) (bool, error) {
 	var existingUsername string
 	var existingID gocql.UUID

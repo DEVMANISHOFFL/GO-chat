@@ -18,7 +18,6 @@ func NewHandler(s *Service) *Handler {
 	return &Handler{Service: s}
 }
 
-// Signup endpoint: POST /signup
 func (h *Handler) Signup(w http.ResponseWriter, r *http.Request) {
 	var req SignupRequest
 
@@ -76,7 +75,7 @@ func (h *Handler) RegisterRouter(r *mux.Router) {
 }
 
 func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
-	userID := GetUserID(r) // from middleware context
+	userID := GetUserID(r)
 	if userID == "" {
 		utils.JSONResponse(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return

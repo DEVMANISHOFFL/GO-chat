@@ -30,7 +30,6 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
-// ---- Handler with Scylla session ----
 type Handler struct {
 	Svc    *Service
 	Scylla *gocql.Session
@@ -41,7 +40,6 @@ func NewHandler(s *Service, scylla *gocql.Session, hub *ws.Hub) *Handler {
 	return &Handler{Svc: s, Scylla: scylla, Hub: hub}
 }
 
-// Register under /api/chat (subrouter passed by caller)
 func (h *Handler) Register(r *mux.Router) {
 	r.HandleFunc("/rooms", h.CreateRoom).Methods("POST")
 	r.HandleFunc("/rooms", h.ListRooms).Methods("GET")
@@ -107,7 +105,7 @@ func WSHandler(hub *ws.Hub, validator AuthValidator, logger *zap.Logger, sendQue
 	}
 }
 
-func NewHandlerWithoutScylla(s *Service) *Handler { // if other packages still call it
+func NewHandlerWithoutScylla(s *Service) *Handler {
 	return &Handler{Svc: s, Scylla: nil}
 }
 
@@ -188,10 +186,9 @@ func (h *Handler) ListMessages(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	roomIDStr := vars["room_id"]
 
-	// Accept UUID or slug. Try UUID first.
 	roomID, err := gocql.ParseUUID(roomIDStr)
 	if err != nil {
-		// resolve slug -> uuid via rooms table
+
 		if h.Scylla == nil {
 			utils.JSONResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid room id"})
 			return
@@ -211,7 +208,7 @@ func (h *Handler) ListMessages(w http.ResponseWriter, r *http.Request) {
 			limit = v
 		}
 	}
-	before := r.URL.Query().Get("before") // optional
+	before := r.URL.Query().Get("before")
 
 	msgs, err := h.Svc.GetMessages(roomID, limit, before)
 	if err != nil {
@@ -262,7 +259,6 @@ func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// WS broadcast: message.updated
 	if h.Hub != nil {
 		ev := ws.NewServerEvent("message.updated", "server", res.RoomID, map[string]any{
 			"id":       res.MsgID,
@@ -299,7 +295,6 @@ func (h *Handler) DeleteMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// reason can come from body or query (?reason=)
 	var req DeleteMessageRequest
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	if req.Reason == "" {
@@ -316,7 +311,6 @@ func (h *Handler) DeleteMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// WS broadcast: message.deleted (tombstone)
 	if h.Hub != nil {
 		payload := map[string]any{
 			"id":        res.MsgID,

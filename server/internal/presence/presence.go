@@ -17,13 +17,11 @@ func New(rdb *redis.Client, ttl time.Duration) *Service {
 	return &Service{rdb: rdb, ttl: ttl}
 }
 
-// key = presence:<room_id>:<user_id>  (SETEX=1)
 func (p *Service) Touch(ctx context.Context, roomID, userID string) error {
 	key := fmt.Sprintf("presence:%s:%s", roomID, userID)
 	return p.rdb.Set(ctx, key, "1", p.ttl).Err()
 }
 
-// SCAN presence:<room_id>:*
 func (p *Service) List(ctx context.Context, roomID string, limit int64) ([]string, error) {
 	var (
 		cursor uint64
@@ -42,9 +40,9 @@ func (p *Service) List(ctx context.Context, roomID string, limit int64) ([]strin
 			break
 		}
 	}
-	// keys look like presence:<room_id>:<user_id> → extract user_id
+
 	for _, k := range keys {
-		// find last colon
+
 		last := -1
 		for i := len(k) - 1; i >= 0; i-- {
 			if k[i] == ':' {

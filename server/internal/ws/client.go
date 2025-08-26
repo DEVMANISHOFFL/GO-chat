@@ -13,15 +13,14 @@ const (
 	writeWait      = 10 * time.Second
 	pongWait       = 60 * time.Second
 	pingPeriod     = (pongWait * 9) / 10
-	maxMessageSize = 1 << 20 // 1MB
+	maxMessageSize = 1 << 20
 )
 
-// Client represents a single websocket connection.
 type Client struct {
 	ID            string
 	UserID        string
 	conn          *websocket.Conn
-	send          chan []byte // outbound messages
+	send          chan []byte
 	subscriptions map[string]struct{}
 	hub           *Hub
 }
@@ -37,7 +36,6 @@ func NewClient(conn *websocket.Conn, userID string, hub *Hub, sendQueueSize int)
 	}
 }
 
-// ReadPump reads messages from websocket and routes to hub.inbound.
 func (c *Client) ReadPump() {
 	defer func() {
 		c.hub.unregister <- c
@@ -54,33 +52,31 @@ func (c *Client) ReadPump() {
 		_, message, err := c.conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				// optional logging
+
 			}
 			break
 		}
-		// Trim spaces/newlines
+
 		message = bytes.TrimSpace(bytes.ReplaceAll(message, []byte{'\n'}, []byte{' '}))
 
-		// Decode JSON into Event
 		var ev Event
 		if err := json.Unmarshal(message, &ev); err != nil {
-			// send error back to client
+
 			errEv := NewServerEvent("error", "server", c.UserID, map[string]interface{}{
 				"reason": "invalid_event",
 			})
 			c.hub.SafeSend(c, errEv)
 			continue
 		}
-		// ensure "from" is set
+
 		if ev.From == "" {
 			ev.From = c.UserID
 		}
-		// route to hub for business logic
+
 		c.hub.inbound <- ev
 	}
 }
 
-// WritePump writes messages from send queue to the websocket.
 func (c *Client) WritePump() {
 	ticker := time.NewTicker(pingPeriod)
 	defer func() {

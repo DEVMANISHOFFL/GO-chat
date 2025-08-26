@@ -7,7 +7,6 @@ import (
 	"github.com/gocql/gocql"
 )
 
-// InitScylla initializes and returns a Scylla session
 func InitScylla(hosts []string, keyspace string) *gocql.Session {
 	cluster := gocql.NewCluster(hosts...)
 	cluster.Keyspace = keyspace

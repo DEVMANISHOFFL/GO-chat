@@ -37,6 +37,37 @@ type ApiMessageDb = {
 const norm = (s?: string | null) => (s ?? '').trim().toLowerCase();
 
 
+async function editMessageREST(roomId: string, msgId: string, content: string) {
+    const apiBase = process.env.NEXT_PUBLIC_API_URL || '';
+    const token = (localStorage.getItem('token') || '').trim();
+    const res = await fetch(`${apiBase}/api/chat/rooms/${encodeURIComponent(roomId)}/messages/${encodeURIComponent(msgId)}`, {
+        method: 'PATCH',
+        headers: {
+            'Content-Type': 'application/json',
+            ...(!!token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ content }),
+    });
+    if (!res.ok) throw new Error(await res.text().catch(() => `HTTP ${res.status}`));
+    return res.json();
+}
+
+async function deleteMessageREST(roomId: string, msgId: string, reason?: string) {
+    const apiBase = process.env.NEXT_PUBLIC_API_URL || '';
+    const token = (localStorage.getItem('token') || '').trim();
+    const url = new URL(`${apiBase}/api/chat/rooms/${encodeURIComponent(roomId)}/messages/${encodeURIComponent(msgId)}`, window.location.origin);
+    if (reason && reason.trim()) url.searchParams.set('reason', reason.trim());
+    const res = await fetch(url.toString().replace(window.location.origin, ''), {
+        method: 'DELETE',
+        headers: {
+            ...(!!token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+    });
+    if (!res.ok) throw new Error(await res.text().catch(() => `HTTP ${res.status}`));
+    return res.json();
+}
+
+
 function mapDbToMessage(m: ApiMessageDb): Message {
     return {
         id: String(m.msgId),
@@ -47,6 +78,10 @@ function mapDbToMessage(m: ApiMessageDb): Message {
         },
         content: String(m.content),
         createdAt: m.createdAt,
+        editedAt: (m as any).editedAt,
+        deletedAt: (m as any).deletedAt,
+        deletedBy: (m as any).deletedBy,
+        deletedReason: (m as any).deletedReason,
     };
 }
 
@@ -71,6 +106,8 @@ function applyInsert(arr: Message[], m: Message) {
     next.sort((a, b) => +new Date(a.createdAt as any) - +new Date(b.createdAt as any));
     return next;
 }
+
+
 
 function buildWsUrl(roomJoinId: string) {
     const baseRaw = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8080/ws';
@@ -219,6 +256,38 @@ export default function AppShell({
                     break;
                 }
 
+                case 'message.updated': {
+                    const { id, roomId, content, editedAt } = p;
+                    const bucket = normalizeKey(String(roomId));
+                    setMessagesByRoom((prev) => {
+                        const list = prev[bucket] || [];
+                        const i = list.findIndex((m) => m.id === String(id));
+                        if (i < 0) return prev;
+                        const next = [...list];
+                        next[i] = { ...next[i], content: String(content ?? ''), editedAt: editedAt ?? new Date().toISOString() };
+                        return { ...prev, [bucket]: next };
+                    });
+                    break;
+                }
+
+                case 'message.deleted': {
+                    const { id, roomId, deletedAt, deletedBy, deletedReason } = p;
+                    const bucket = normalizeKey(String(roomId));
+                    setMessagesByRoom((prev) => {
+                        const list = prev[bucket] || [];
+                        const i = list.findIndex((m) => m.id === String(id));
+                        if (i < 0) return prev;
+                        const next = [...list];
+                        next[i] = {
+                            ...next[i],
+                            deletedAt: deletedAt ?? new Date().toISOString(),
+                            deletedBy: deletedBy,
+                            deletedReason: deletedReason,
+                        };
+                        return { ...prev, [bucket]: next };
+                    });
+                    break;
+                }
 
                 case 'typing.start': {
                     const roomKey = normalizeKey(String(p.roomId));
@@ -280,6 +349,59 @@ export default function AppShell({
         } as any);
     };
 
+    const handleEditMessage = async (msg: Message) => {
+        try {
+            // author-only on client (server enforces 15 min as well)
+            if (me?.id !== msg.author?.id) return alert('You can only edit your message.');
+            const joinId = ((active as any)?.uuid as string | undefined) || active?.id || currentRoomId;
+            const current = msg.content ?? '';
+            const next = window.prompt('Edit message:', current);
+            if (next == null) return; // cancelled
+            const trimmed = next.trim();
+            if (!trimmed || trimmed === current) return;
+
+            await editMessageREST(joinId, msg.id, trimmed);
+            // Optimistic UI: set content + editedAt; WS will confirm
+            setMessagesByRoom((prev) => {
+                const bucket = currentRoomId;
+                const list = prev[bucket] || [];
+                const i = list.findIndex((m) => m.id === msg.id);
+                if (i < 0) return prev;
+                const nextList = [...list];
+                nextList[i] = { ...nextList[i], content: trimmed, editedAt: new Date().toISOString() };
+                return { ...prev, [bucket]: nextList };
+            });
+        } catch (e: any) {
+            console.warn('[Edit] failed', e);
+            alert('Edit failed.');
+        }
+    };
+
+    const handleDeleteMessage = async (msg: Message) => {
+        try {
+            if (me?.id !== msg.author?.id) return alert('You can only delete your message.');
+            if (!window.confirm('Delete this message?')) return;
+            const joinId = ((active as any)?.uuid as string | undefined) || active?.id || currentRoomId;
+            await deleteMessageREST(joinId, msg.id, 'user_delete');
+            // Optimistic UI: mark tombstone; WS will confirm
+            setMessagesByRoom((prev) => {
+                const bucket = currentRoomId;
+                const list = prev[bucket] || [];
+                const i = list.findIndex((m) => m.id === msg.id);
+                if (i < 0) return prev;
+                const now = new Date().toISOString();
+                const nextList = [...list];
+                nextList[i] = { ...nextList[i], deletedAt: now, deletedBy: me?.id, deletedReason: 'user_delete' };
+                return { ...prev, [bucket]: nextList };
+            });
+        } catch (e: any) {
+            console.warn('[Delete] failed', e);
+            alert('Delete failed.');
+        }
+    };
+
+
+
     const joinKey =
         ((active as any)?.uuid as string | undefined) || active?.id || currentRoomId;
     const typingNames = Object.values(typers);
@@ -308,7 +430,12 @@ export default function AppShell({
                 </div>
 
                 {/* Gate list until identity is known to avoid side flips */}
-                {meReady ? <MessageList items={items} meId={me!.id} /> : <div className="flex-1" />}
+                {meReady ? <MessageList
+                    items={items}
+                    meId={me!.id}
+                    onEditMessage={handleEditMessage}
+                    onDeleteMessage={handleDeleteMessage}
+                /> : <div className="flex-1" />}
 
                 <TypingIndicator names={typingNames} />
                 <Composer

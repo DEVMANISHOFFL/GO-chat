@@ -8,11 +8,9 @@ import (
 	"time"
 
 	"github.com/gocql/gocql"
-	"github.com/google/uuid"
 )
 
-// PersistMessageFunc allows the hub to persist chat messages.
-type PersistMessageFunc func(roomID, userID gocql.UUID, text string, createdAt time.Time) error
+type PersistMessageFunc func(roomID, userID gocql.UUID, text string, createdAt time.Time) (gocql.UUID, error)
 
 // UserLookupFunc returns a username for a given user UUID.
 type UserLookupFunc func(ctx context.Context, userID gocql.UUID) (username string, err error)
@@ -273,24 +271,6 @@ func (h *Hub) routeEvent(ev Event) {
 		return
 
 	// ===== Legacy: chat.message (kept for compatibility) =====
-	case "chat.message":
-		// Expect: ev.To=room_id (UUID), ev.From=user_id (UUID), payload["text"]=string
-		roomID, err1 := gocql.ParseUUID(ev.To)
-		userID, err2 := gocql.ParseUUID(ev.From)
-		var text string
-		if t, ok := ev.Payload["text"].(string); ok {
-			text = t
-		}
-		if err1 == nil && err2 == nil && text != "" && h.persistMessage != nil {
-			_ = h.persistMessage(roomID, userID, text, time.Now().UTC())
-		}
-		h.broadcastToChannel(ev.To, ev, "")
-		if h.Presence != nil && ev.To != "" && ev.From != "" {
-			_ = h.Presence.Touch(h.ctx, ev.To, ev.From)
-		}
-		return
-
-	// ===== New flow: message.send → message.created =====
 	case "message.send":
 		// Expect ev.Payload: { tempId, roomId, content }
 		tempID, _ := ev.Payload["tempId"].(string)
@@ -308,17 +288,22 @@ func (h *Hub) routeEvent(ev Event) {
 			return
 		}
 
-		// Persist if configured (optional)
+		// Persist and get the REAL DB message id
+		var dbMsgID gocql.UUID
 		if h.persistMessage != nil {
-			if err := h.persistMessage(rid, uid, content, time.Now().UTC()); err != nil {
+			id, err := h.persistMessage(rid, uid, content, time.Now().UTC())
+			if err != nil {
 				log.Printf("persistMessage error: %v", err)
-				// Optionally notify sender
 				if c := h.findClientByUser(ev.From); c != nil {
 					h.SafeSend(c, NewServerEvent("error", "server", ev.From, map[string]any{
 						"reason": "persist_failed",
 					}))
 				}
+				return
 			}
+			dbMsgID = id
+		} else {
+			dbMsgID = gocql.TimeUUID()
 		}
 
 		// Lookup author's username (best effort)
@@ -331,12 +316,10 @@ func (h *Hub) routeEvent(ev Event) {
 			}
 		}
 
-		// Create server event "message.created"
-		msgID := uuid.NewString() // If DB returns ID, prefer that
+		// Build "message.created" with the DB id
 		createdAt := time.Now().UTC().Format(time.RFC3339Nano)
-
 		out := NewServerEvent("message.created", "server", roomIDStr, map[string]any{
-			"id":        msgID,
+			"id":        dbMsgID.String(), // <-- important: DB id
 			"tempId":    tempID,
 			"roomId":    roomIDStr,
 			"author":    map[string]any{"id": ev.From, "username": username},
@@ -344,7 +327,7 @@ func (h *Hub) routeEvent(ev Event) {
 			"createdAt": createdAt,
 		})
 
-		// Fan out to everyone in the room
+		// Fan out
 		h.broadcastToChannel(roomIDStr, out, "")
 		if h.Presence != nil {
 			_ = h.Presence.Touch(h.ctx, roomIDStr, ev.From)
@@ -456,4 +439,12 @@ func (h *Hub) findClientByUser(userID string) *Client {
 		}
 	}
 	return nil
+}
+
+func (h *Hub) EmitSystem(ev Event) {
+	select {
+	case h.system <- ev:
+	default:
+		// drop if system queue is full to avoid deadlock
+	}
 }

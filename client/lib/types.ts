@@ -12,9 +12,12 @@ export type Message = {
     author: Pick<Member, 'id' | 'username' | 'avatarUrl'>;
     content: string;
     createdAt: string | number; // tolerate ISO or ms
-    editedAt?: string;
     type?: 'system' | 'user';
     replyToId?: string;
+    editedAt?: string | number;
+    deletedAt?: string | number;
+    deletedBy?: { id: string; username?: string } | string;
+    deletedReason?: string;
 };
 
 export type Room = {

@@ -17,3 +17,11 @@ type SendMessageResponse struct {
 	MsgID   string `json:"msg_id"`
 	Content string `json:"content"`
 }
+
+type EditMessageRequest struct {
+	Content string `json:"content"`
+}
+
+type DeleteMessageRequest struct {
+	Reason string `json:"reason,omitempty"`
+}

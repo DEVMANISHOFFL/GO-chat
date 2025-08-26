@@ -34,10 +34,11 @@ var upgrader = websocket.Upgrader{
 type Handler struct {
 	Svc    *Service
 	Scylla *gocql.Session
+	Hub    *ws.Hub
 }
 
-func NewHandler(s *Service, scylla *gocql.Session) *Handler {
-	return &Handler{Svc: s, Scylla: scylla}
+func NewHandler(s *Service, scylla *gocql.Session, hub *ws.Hub) *Handler {
+	return &Handler{Svc: s, Scylla: scylla, Hub: hub}
 }
 
 // Register under /api/chat (subrouter passed by caller)
@@ -46,6 +47,9 @@ func (h *Handler) Register(r *mux.Router) {
 	r.HandleFunc("/rooms", h.ListRooms).Methods("GET")
 	r.HandleFunc("/rooms/{room_id}/messages", h.SendMessage).Methods("POST")
 	r.HandleFunc("/rooms/{room_id}/messages", h.ListMessages).Methods("GET")
+
+	r.HandleFunc("/rooms/{room_id}/messages/{msg_id}", h.EditMessage).Methods("PATCH")
+	r.HandleFunc("/rooms/{room_id}/messages/{msg_id}", h.DeleteMessage).Methods("DELETE")
 }
 
 func WSHandler(hub *ws.Hub, validator AuthValidator, logger *zap.Logger, sendQueueSize int) http.HandlerFunc {
@@ -215,4 +219,117 @@ func (h *Handler) ListMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	utils.JSONResponse(w, http.StatusOK, msgs)
+}
+
+func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) {
+	uidStr := auth.GetUserID(r)
+	if uidStr == "" {
+		utils.JSONResponse(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	uid, err := gocql.ParseUUID(uidStr)
+	if err != nil {
+		utils.JSONResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid user id"})
+		return
+	}
+	vars := mux.Vars(r)
+	roomID, err := gocql.ParseUUID(vars["room_id"])
+	if err != nil {
+		utils.JSONResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid room id"})
+		return
+	}
+	msgID, err := gocql.ParseUUID(vars["msg_id"])
+	if err != nil {
+		utils.JSONResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid message id"})
+		return
+	}
+
+	var req EditMessageRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		utils.JSONResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid payload"})
+		return
+	}
+
+	res, err := h.Svc.EditMessage(roomID, msgID, uid, req.Content)
+	if err != nil {
+		status := http.StatusBadRequest
+		if strings.Contains(err.Error(), "forbidden") {
+			status = http.StatusForbidden
+		} else if strings.Contains(err.Error(), "expired") {
+			status = http.StatusConflict
+		}
+		utils.JSONResponse(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+
+	// WS broadcast: message.updated
+	if h.Hub != nil {
+		ev := ws.NewServerEvent("message.updated", "server", res.RoomID, map[string]any{
+			"id":       res.MsgID,
+			"roomId":   res.RoomID,
+			"content":  res.Content,
+			"editedAt": res.EditedAt.Format(time.RFC3339Nano),
+		})
+		h.Hub.EmitSystem(ev)
+	}
+
+	utils.JSONResponse(w, http.StatusOK, res)
+}
+
+func (h *Handler) DeleteMessage(w http.ResponseWriter, r *http.Request) {
+	uidStr := auth.GetUserID(r)
+	if uidStr == "" {
+		utils.JSONResponse(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	uid, err := gocql.ParseUUID(uidStr)
+	if err != nil {
+		utils.JSONResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid user id"})
+		return
+	}
+	vars := mux.Vars(r)
+	roomID, err := gocql.ParseUUID(vars["room_id"])
+	if err != nil {
+		utils.JSONResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid room id"})
+		return
+	}
+	msgID, err := gocql.ParseUUID(vars["msg_id"])
+	if err != nil {
+		utils.JSONResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid message id"})
+		return
+	}
+
+	// reason can come from body or query (?reason=)
+	var req DeleteMessageRequest
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	if req.Reason == "" {
+		req.Reason = r.URL.Query().Get("reason")
+	}
+
+	res, err := h.Svc.DeleteMessage(roomID, msgID, uid, req.Reason)
+	if err != nil {
+		status := http.StatusBadRequest
+		if strings.Contains(err.Error(), "forbidden") {
+			status = http.StatusForbidden
+		}
+		utils.JSONResponse(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+
+	// WS broadcast: message.deleted (tombstone)
+	if h.Hub != nil {
+		payload := map[string]any{
+			"id":        res.MsgID,
+			"roomId":    res.RoomID,
+			"deletedAt": res.DeletedAt.Format(time.RFC3339Nano),
+			"deletedBy": res.DeletedBy,
+		}
+		if res.DeletedReason != nil {
+			payload["deletedReason"] = *res.DeletedReason
+		}
+		ev := ws.NewServerEvent("message.deleted", "server", res.RoomID, payload)
+		h.Hub.EmitSystem(ev)
+	}
+
+	utils.JSONResponse(w, http.StatusOK, res)
 }

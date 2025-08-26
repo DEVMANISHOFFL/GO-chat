@@ -76,11 +76,15 @@ export default function MessageList({
     meId,
     highlightId,
     newAnchorId,
+    onEditMessage,
+    onDeleteMessage,
 }: {
     items: Message[];
     meId: string;
     highlightId?: string;
     newAnchorId?: string;
+    onEditMessage?: (msg: Message) => void;
+    onDeleteMessage?: (msg: Message) => void;
 }) {
     const [atBottom, setAtBottom] = useState(true);
     const parentRef = useRef<HTMLDivElement | null>(null);
@@ -183,7 +187,13 @@ export default function MessageList({
                                                 createdAt={row.msg.createdAt}
                                                 mine={row.mine}
                                                 highlighted={highlightId === row.msg.id}
-                                                // @ts-expect-error optional prop
+                                                editedAt={(row.msg as any).editedAt}
+                                                deletedAt={(row.msg as any).deletedAt}
+                                                deletedReason={(row.msg as any).deletedReason}
+                                                canEdit={row.mine && !row.msg.deletedAt}           // simple client-side guard
+                                                canDelete={row.mine && !row.msg.deletedAt}
+                                                onEdit={() => onEditMessage?.(row.msg)}
+                                                onDelete={() => onDeleteMessage?.(row.msg)}
                                                 showHeader={(row as any).showHeader}
                                             />
                                         </div>
@@ -197,3 +207,4 @@ export default function MessageList({
         </div>
     );
 }
+

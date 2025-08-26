@@ -39,14 +39,16 @@ func main() {
 
 	chatRepo := chat.NewRepository(scyllaSession)
 	chatSvc := chat.NewService(chatRepo)
-	persist := func(roomID, userID gocql.UUID, text string, createdAt time.Time) error {
-		return chatRepo.InsertMessage(&chat.Message{
+	persist := func(roomID, userID gocql.UUID, text string, createdAt time.Time) (gocql.UUID, error) {
+		id := gocql.TimeUUID()
+		err := chatRepo.InsertMessage(&chat.Message{
 			RoomID:    roomID,
-			MsgID:     gocql.TimeUUID(),
+			MsgID:     id,
 			UserID:    userID,
 			Content:   text,
 			CreatedAt: createdAt,
 		})
+		return id, err
 	}
 
 	lookup := func(ctx context.Context, userID gocql.UUID) (string, error) {
@@ -64,10 +66,10 @@ func main() {
 
 	pres := presence.New(redisClient, 45*time.Second)
 
-	chatH := chat.NewHandler(chatSvc, scyllaSession)
 	hub := ws.NewHub(persist, lookup)
 	hub.Presence = pres
 	go hub.Run()
+	chatH := chat.NewHandler(chatSvc, scyllaSession, hub)
 
 	logger, _ := zap.NewDevelopment() // or zap.NewProduction()
 	defer logger.Sync()
@@ -84,7 +86,7 @@ func main() {
 
 	chatH.Register(api.PathPrefix("/chat").Subrouter())
 
-	api.HandleFunc("api/chat/rooms/{room_id}/presence", func(w http.ResponseWriter, r *http.Request) {
+	api.HandleFunc("/chat/rooms/{room_id}/presence", func(w http.ResponseWriter, r *http.Request) {
 		roomID := mux.Vars(r)["room_id"]
 		users, err := pres.List(r.Context(), roomID, 1000)
 		if err != nil {

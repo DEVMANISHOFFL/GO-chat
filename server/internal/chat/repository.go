@@ -47,11 +47,15 @@ type Room struct {
 }
 
 type Message struct {
-	RoomID    gocql.UUID `json:"roomId"`
-	MsgID     gocql.UUID `json:"msgId"` // timeuuid
-	UserID    gocql.UUID `json:"userId"`
-	Content   string     `json:"content"`
-	CreatedAt time.Time  `json:"createdAt"`
+	RoomID        gocql.UUID  `json:"roomId"`
+	MsgID         gocql.UUID  `json:"msgId"` // timeuuid
+	UserID        gocql.UUID  `json:"userId"`
+	Content       string      `json:"content"`
+	CreatedAt     time.Time   `json:"createdAt"`
+	EditedAt      *time.Time  `json:"editedAt,omitempty"`
+	DeletedAt     *time.Time  `json:"deletedAt,omitempty"`
+	DeletedBy     *gocql.UUID `json:"deletedBy,omitempty"`
+	DeletedReason *string     `json:"deletedReason,omitempty"`
 }
 
 // ---- Rooms ----
@@ -118,30 +122,63 @@ func (r *Repository) ListMessages(roomID gocql.UUID, limit int, before *gocql.UU
 	}
 
 	var iter *gocql.Iter
+	const baseQ = `SELECT room_id, msg_id, user_id, content, created_at,
+                          edited_at, deleted_at, deleted_by, deleted_reason
+                   FROM room_messages`
 
 	if before != nil {
-		const q = `SELECT room_id, msg_id, user_id, content, created_at
-		           FROM room_messages
-		           WHERE room_id = ? AND msg_id < ?
-		           ORDER BY msg_id DESC
-		           LIMIT ?`
+		q := baseQ + `
+            WHERE room_id = ? AND msg_id < ?
+            ORDER BY msg_id DESC
+            LIMIT ?`
 		iter = r.Session.Query(q, roomID, *before, limit).Iter()
 	} else {
-		const q = `SELECT room_id, msg_id, user_id, content, created_at
-		           FROM room_messages
-		           WHERE room_id = ?
-		           ORDER BY msg_id DESC
-		           LIMIT ?`
+		q := baseQ + `
+            WHERE room_id = ?
+            ORDER BY msg_id DESC
+            LIMIT ?`
 		iter = r.Session.Query(q, roomID, limit).Iter()
 	}
 
 	msgs := make([]Message, 0, limit)
 	var m Message
-	for iter.Scan(&m.RoomID, &m.MsgID, &m.UserID, &m.Content, &m.CreatedAt) {
+	for iter.Scan(&m.RoomID, &m.MsgID, &m.UserID, &m.Content, &m.CreatedAt,
+		&m.EditedAt, &m.DeletedAt, &m.DeletedBy, &m.DeletedReason) {
 		msgs = append(msgs, m)
 	}
 	if err := iter.Close(); err != nil {
 		return nil, err
 	}
 	return msgs, nil
+}
+
+func (r *Repository) UpdateMessageContent(roomID, msgID gocql.UUID, newContent string, editedAt time.Time) error {
+	const q = `UPDATE room_messages
+	           SET content = ?, edited_at = ?
+	           WHERE room_id = ? AND msg_id = ?`
+	return r.Session.Query(q, newContent, editedAt, roomID, msgID).Exec()
+}
+
+func (r *Repository) SoftDeleteMessage(roomID, msgID, deletedBy gocql.UUID, reason string, deletedAt time.Time) error {
+	const q = `UPDATE room_messages
+	           SET deleted_at = ?, deleted_by = ?, deleted_reason = ?
+	           WHERE room_id = ? AND msg_id = ?`
+	return r.Session.Query(q, deletedAt, deletedBy, reason, roomID, msgID).Exec()
+}
+
+// --- NEW: fetch one message (for ownership/time checks) ---
+func (r *Repository) GetMessage(roomID, msgID gocql.UUID) (*Message, error) {
+	const q = `SELECT room_id, msg_id, user_id, content, created_at, edited_at, deleted_at, deleted_by, deleted_reason
+	           FROM room_messages
+	           WHERE room_id = ? AND msg_id = ?
+	           LIMIT 1`
+	var m Message
+	err := r.Session.Query(q, roomID, msgID).Scan(
+		&m.RoomID, &m.MsgID, &m.UserID, &m.Content, &m.CreatedAt,
+		&m.EditedAt, &m.DeletedAt, &m.DeletedBy, &m.DeletedReason,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &m, nil
 }

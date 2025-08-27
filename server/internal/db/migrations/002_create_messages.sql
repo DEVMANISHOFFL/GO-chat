@@ -13,3 +13,5 @@ CREATE TABLE IF NOT EXISTS messages (
     created_at TIMESTAMP,
     PRIMARY KEY (chat_id, message_id)
 ) WITH CLUSTERING ORDER BY (message_id ASC);
+
+ALTER TABLE messages ADD parent_msg_id uuid;

@@ -18,35 +18,40 @@ import { wsManager } from '@/lib/ws';
 import type { WSStatus } from '@/lib/ws-types';
 import { makeTempId } from '@/lib/tempId';
 import LogoutButton from '../auth/LogoutButton';
-import { log } from 'console';
-
 
 type MessagesByRoom = Record<string, Message[]>;
 type TypersMap = Record<string, string>;
 
 type ApiMessageDb = {
-    roomId: string;     
-    msgId: string;      
-    userId: string;     
-    username: string;   
+    roomId: string;
+    msgId: string;
+    userId: string;
+    username: string;
     content: string;
-    createdAt: string | number; 
+    createdAt: string | number;
+    // may include parent field in various shapes
+    parentId?: string;
+    parent_msg_id?: string;
 };
 
 const norm = (s?: string | null) => (s ?? '').trim().toLowerCase();
 
-
 async function editMessageREST(roomId: string, msgId: string, content: string) {
     const apiBase = process.env.NEXT_PUBLIC_API_URL || '';
     const token = (localStorage.getItem('token') || '').trim();
-    const res = await fetch(`${apiBase}/api/chat/rooms/${encodeURIComponent(roomId)}/messages/${encodeURIComponent(msgId)}`, {
-        method: 'PATCH',
-        headers: {
-            'Content-Type': 'application/json',
-            ...(!!token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ content }),
-    });
+    const res = await fetch(
+        `${apiBase}/api/chat/rooms/${encodeURIComponent(roomId)}/messages/${encodeURIComponent(
+            msgId
+        )}`,
+        {
+            method: 'PATCH',
+            headers: {
+                'Content-Type': 'application/json',
+                ...(!!token ? { Authorization: `Bearer ${token}` } : {}),
+            },
+            body: JSON.stringify({ content }),
+        }
+    );
     if (!res.ok) throw new Error(await res.text().catch(() => `HTTP ${res.status}`));
     return res.json();
 }
@@ -54,7 +59,12 @@ async function editMessageREST(roomId: string, msgId: string, content: string) {
 async function deleteMessageREST(roomId: string, msgId: string, reason?: string) {
     const apiBase = process.env.NEXT_PUBLIC_API_URL || '';
     const token = (localStorage.getItem('token') || '').trim();
-    const url = new URL(`${apiBase}/api/chat/rooms/${encodeURIComponent(roomId)}/messages/${encodeURIComponent(msgId)}`, window.location.origin);
+    const url = new URL(
+        `${apiBase}/api/chat/rooms/${encodeURIComponent(roomId)}/messages/${encodeURIComponent(
+            msgId
+        )}`,
+        window.location.origin
+    );
     if (reason && reason.trim()) url.searchParams.set('reason', reason.trim());
     const res = await fetch(url.toString().replace(window.location.origin, ''), {
         method: 'DELETE',
@@ -66,8 +76,16 @@ async function deleteMessageREST(roomId: string, msgId: string, reason?: string)
     return res.json();
 }
 
-
 function mapDbToMessage(m: ApiMessageDb): Message {
+    const rawParent = (m as any).parent ?? (m as any).reply_to ?? null;
+    const parentId =
+        (m as any).parentId ??
+        (m as any).parent_id ??
+        (m as any).parent_msg_id ??
+        (typeof rawParent === 'string'
+            ? rawParent
+            : rawParent?.id ?? rawParent?.msgId ?? rawParent?.messageId);
+
     return {
         id: String(m.msgId),
         roomId: String(m.roomId),
@@ -81,8 +99,10 @@ function mapDbToMessage(m: ApiMessageDb): Message {
         deletedAt: (m as any).deletedAt,
         deletedBy: (m as any).deletedBy,
         deletedReason: (m as any).deletedReason,
+        parentId, // 👈 now robust
     };
 }
+
 
 function getMeFromToken(): { id: string; username: string } | null {
     try {
@@ -106,8 +126,6 @@ function applyInsert(arr: Message[], m: Message) {
     return next;
 }
 
-
-
 function buildWsUrl(roomJoinId: string) {
     const baseRaw = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8080/ws';
     const base = new URL(baseRaw, window.location.origin);
@@ -123,7 +141,7 @@ function buildWsUrl(roomJoinId: string) {
 
 export default function AppShell({
     rooms,
-    currentRoomId, 
+    currentRoomId,
     onSelectRoom,
     children,
 }: PropsWithChildren & {
@@ -137,7 +155,7 @@ export default function AppShell({
     const [status, setStatus] = useState<WSStatus>('offline');
     const [messagesByRoom, setMessagesByRoom] = useState<MessagesByRoom>({});
     const [editingMessageId, setEditingMessageId] = React.useState<string | null>(null);
-
+    const [replyingTo, setReplyingTo] = useState<Message | null>(null);
 
     const [me, setMe] = useState<{ id: string; username: string } | null>(null);
     useEffect(() => {
@@ -169,7 +187,9 @@ export default function AppShell({
                     ((active as any)?.uuid as string | undefined) || active?.id || currentRoomId;
 
                 const apiBase = process.env.NEXT_PUBLIC_API_URL || ''; // '' = Next proxy
-                const url = `${apiBase}/api/chat/rooms/${encodeURIComponent(historyRoomId)}/messages?limit=50`;
+                const url = `${apiBase}/api/chat/rooms/${encodeURIComponent(
+                    historyRoomId
+                )}/messages?limit=50`;
 
                 const res = await fetch(url, {
                     headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -184,7 +204,9 @@ export default function AppShell({
                 }
 
                 const raw: ApiMessageDb[] = await res.json();
-                raw.sort((a, b) => +new Date(a.createdAt as any) - +new Date(b.createdAt as any));
+                raw.sort(
+                    (a, b) => +new Date(a.createdAt as any) - +new Date(b.createdAt as any)
+                );
                 const bucketKey = normalizeKey(historyRoomId);
                 setMessagesByRoom((prev) => ({ ...prev, [bucketKey]: raw.map(mapDbToMessage) }));
             } catch (e: any) {
@@ -219,11 +241,19 @@ export default function AppShell({
                     break;
 
                 case 'message.created': {
+
+                    const rawParent = (p as any).parent ?? (p as any).reply_to ?? null;
+                    const parentId =
+                        (p as any).parentId ??
+                        (p as any).parent_id ??
+                        (p as any).parent_msg_id ??
+                        (typeof rawParent === 'string'
+                            ? rawParent
+                            : rawParent?.id ?? rawParent?.msgId ?? rawParent?.messageId);
                     const { id, tempId, roomId, author, content, createdAt } = p;
                     const bucket = normalizeKey(String(roomId));
 
                     const safeAuthor = {
-
                         id: String(author?.id ?? p.userId ?? p.user_id ?? 'unknown'),
                         username: String(author?.username ?? author?.name ?? 'Unknown'),
                     };
@@ -234,16 +264,26 @@ export default function AppShell({
                         author: safeAuthor,
                         content: String(content ?? ''),
                         createdAt: createdAt ?? new Date().toISOString(),
+                        // 🔥 parent from WS payload (support multiple casings)
+                        parentId, // 👈 keep it
                     };
-
 
                     setMessagesByRoom((prev) => {
                         const list = prev[bucket] || [];
                         const i = tempId ? list.findIndex((m) => m.id === tempId) : -1;
                         if (i >= 0) {
+
+                            const prior = list[i];
+                            const merged: Message = {
+                                ...prior,           // keeps optimistic fields
+                                ...nextMsg,         // server wins
+                                parentId: nextMsg.parentId ?? prior.parentId, // 👈 preserve if missing
+                            };
                             const next = [...list];
-                            next[i] = nextMsg;
-                            next.sort((a, b) => +new Date(a.createdAt as any) - +new Date(b.createdAt as any));
+                            next[i] = merged;
+                            next.sort(
+                                (a, b) => +new Date(a.createdAt as any) - +new Date(b.createdAt as any)
+                            );
                             return { ...prev, [bucket]: next };
                         }
                         return { ...prev, [bucket]: applyInsert(list, nextMsg) };
@@ -259,7 +299,11 @@ export default function AppShell({
                         const i = list.findIndex((m) => m.id === String(id));
                         if (i < 0) return prev;
                         const next = [...list];
-                        next[i] = { ...next[i], content: String(content ?? ''), editedAt: editedAt ?? new Date().toISOString() };
+                        next[i] = {
+                            ...next[i],
+                            content: String(content ?? ''),
+                            editedAt: editedAt ?? new Date().toISOString(),
+                        };
                         return { ...prev, [bucket]: next };
                     });
                     break;
@@ -307,14 +351,13 @@ export default function AppShell({
             }
         });
 
-        setTypers({}); 
+        setTypers({});
 
         return () => {
             unsubStatus();
             unsubEvent();
             wsManager.disconnect();
         };
-  
     }, [meReady, currentRoomId, (active as any)?.uuid, active?.id]);
 
     // --- send helpers ---
@@ -323,29 +366,34 @@ export default function AppShell({
 
         const tempId = makeTempId();
         const joinId =
-            ((active as any)?.uuid as string | undefined) || active?.id || currentRoomId; 
-        const visibleBucket = currentRoomId; 
+            ((active as any)?.uuid as string | undefined) || active?.id || currentRoomId;
+        const visibleBucket = currentRoomId;
 
         setMessagesByRoom((prev) => ({
             ...prev,
             [visibleBucket]: applyInsert(prev[visibleBucket] || [], {
                 id: tempId,
                 roomId: joinId,
-                author: me, 
+                author: me,
                 content,
                 createdAt: new Date().toISOString(),
+                parentId: replyingTo?.id, // 👈 optimistic parent
             }),
         }));
 
         wsManager.send({
             type: 'message.send',
-            payload: { tempId, roomId: joinId, content },
+            payload: { tempId, roomId: joinId, content, parentId: replyingTo?.id },
         } as any);
+
+        setReplyingTo(null);
     };
+
     const handleEditMessage = async (msg: Message, nextContent: string) => {
         try {
             if (me?.id !== msg.author?.id) return alert('You can only edit your message.');
-            const roomKey = ((active as any)?.uuid as string | undefined) || active?.id || currentRoomId;
+            const roomKey =
+                ((active as any)?.uuid as string | undefined) || active?.id || currentRoomId;
 
             setMessagesByRoom((prev) => {
                 const bucket = currentRoomId;
@@ -353,7 +401,11 @@ export default function AppShell({
                 const i = list.findIndex((m) => m.id === msg.id);
                 if (i < 0) return prev;
                 const nextList = [...list];
-                nextList[i] = { ...nextList[i], content: nextContent, editedAt: new Date().toISOString() };
+                nextList[i] = {
+                    ...nextList[i],
+                    content: nextContent,
+                    editedAt: new Date().toISOString(),
+                };
                 return { ...prev, [bucket]: nextList };
             });
 
@@ -364,10 +416,9 @@ export default function AppShell({
         }
     };
 
-
     const handleDeleteMessage = async (msg: Message) => {
         try {
-            if (me?.id !== msg.author?.id) return; 
+            if (me?.id !== msg.author?.id) return;
             const roomKey =
                 ((active as any)?.uuid as string | undefined) || active?.id || currentRoomId;
 
@@ -389,11 +440,9 @@ export default function AppShell({
 
             await deleteMessageREST(roomKey, msg.id, 'user_delete');
         } catch (e) {
-          
+            // swallow for now
         }
     };
-
-
 
     const joinKey =
         ((active as any)?.uuid as string | undefined) || active?.id || currentRoomId;
@@ -405,7 +454,10 @@ export default function AppShell({
                 <ConnectionBanner status={status} />
             </div>
 
-            <LeftNav onOpenSettings={() => alert('Settings TBD')} onOpenQuickSwitcher={() => setQsOpen(true)} />
+            <LeftNav
+                onOpenSettings={() => alert('Settings TBD')}
+                onOpenQuickSwitcher={() => setQsOpen(true)}
+            />
             <ChannelNav rooms={rooms} activeId={currentRoomId} onSelect={onSelectRoom} />
 
             <div className="flex min-w-0 flex-1 flex-col">
@@ -422,15 +474,20 @@ export default function AppShell({
                     </div>
                 </div>
 
-                {meReady ? <MessageList
-                    items={items}
-                    meId={me!.id}
-                    onEditMessage={handleEditMessage}
-                    onDeleteMessage={handleDeleteMessage}
-                    editingMessageId={editingMessageId}    
-                    onRequestEdit={(id) => setEditingMessageId(id)}  
-                    onEndEdit={() => setEditingMessageId(null)}      
-                /> : <div className="flex-1" />}
+                {meReady ? (
+                    <MessageList
+                        items={items}
+                        meId={me!.id}
+                        onEditMessage={handleEditMessage}
+                        onDeleteMessage={handleDeleteMessage}
+                        editingMessageId={editingMessageId}
+                        onRequestEdit={(id) => setEditingMessageId(id)}
+                        onEndEdit={() => setEditingMessageId(null)}
+                        onReply={(msg) => setReplyingTo(msg)}
+                    />
+                ) : (
+                    <div className="flex-1" />
+                )}
 
                 <TypingIndicator names={typingNames} />
                 <Composer
@@ -440,7 +497,11 @@ export default function AppShell({
                         wsManager.send({
                             type: 'typing.start',
                             to: joinKey,
-                            payload: { roomId: joinKey, userId: me?.id ?? 'anon', name: me?.username ?? 'you' },
+                            payload: {
+                                roomId: joinKey,
+                                userId: me?.id ?? 'anon',
+                                name: me?.username ?? 'you',
+                            },
                         } as any)
                     }
                     onTypingStop={() =>
@@ -451,6 +512,8 @@ export default function AppShell({
                         } as any)
                     }
                     onSend={({ text }) => sendMessage(joinKey, text)}
+                    replyingTo={replyingTo}
+                    onCancelReply={() => setReplyingTo(null)}
                 />
             </div>
 

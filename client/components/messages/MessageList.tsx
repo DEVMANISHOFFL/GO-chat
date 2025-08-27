@@ -9,6 +9,13 @@ import MessageItem from './MessageItem';
 import type { Message } from '@/lib/types';
 import { ArrowDown } from 'lucide-react';
 
+type ParentPreview = {
+    id: string;
+    authorName?: string;
+    text?: string;
+    deleted?: boolean;
+};
+
 type Row =
     | { kind: 'day'; id: string; label: string }
     | { kind: 'new'; id: string }
@@ -19,6 +26,7 @@ type Row =
         mine: boolean;
         showHeader: boolean;
         avatarUrl?: string;
+        parentPreview?: ParentPreview; // ✅ make sure this is here
     };
 
 // ---------- helpers ----------
@@ -38,9 +46,19 @@ function avatarFor(seedLike: string) {
     return `https://api.dicebear.com/7.x/initials/svg?seed=${seed}&backgroundType=gradientLinear`;
 }
 
+function truncate(s: string | undefined | null, n = 80): string {
+    if (!s) return '';
+    return s.length > n ? s.slice(0, n) + '…' : s;
+}
+
+
 function buildRows(messages: Message[], meId: string, newAnchorId?: string): Row[] {
     const rows: Row[] = [];
     const me = normId(meId);
+
+    // map for O(1) parent lookups within current window
+    const byId = new Map<string, Message>();
+    for (const m of messages) byId.set(m.id, m);
 
     for (let i = 0; i < messages.length; i++) {
         const m = messages[i];
@@ -55,8 +73,25 @@ function buildRows(messages: Message[], meId: string, newAnchorId?: string): Row
         }
 
         const mine = normId(m.author?.id) === me;
-        const grouped =
-            !!prev && sameAuthor(prev, m) && within(prev.createdAt as any, m.createdAt as any, GROUP_MS);
+        const grouped = !!prev && sameAuthor(prev, m) && within(prev.createdAt as any, m.createdAt as any, GROUP_MS);
+
+        // 🔥 build parent preview if this is a reply
+        let parentPreview: ParentPreview | undefined; // ✅ no indexed access on Row
+        const parentId = (m as any).parentId as string | undefined;
+        if (parentId) {
+            const parent = byId.get(parentId);
+            if (parent) {
+                parentPreview = {
+                    id: parent.id,
+                    authorName: (parent.author as any)?.username,
+                    text: parent.deletedAt ? undefined : truncate(parent.content || ''),
+                    deleted: !!parent.deletedAt,
+                };
+            } else {
+                // parent not in current slice; keep id so chip can still jump later
+                parentPreview = { id: parentId };
+            }
+        }
 
         rows.push({
             kind: 'msg',
@@ -65,6 +100,7 @@ function buildRows(messages: Message[], meId: string, newAnchorId?: string): Row
             mine,
             showHeader: !grouped,
             avatarUrl: avatarFor((m.author as any)?.username || m.author?.id),
+            parentPreview,
         });
     }
     return rows;
@@ -81,6 +117,7 @@ export default function MessageList({
     editingMessageId,
     onRequestEdit,
     onEndEdit,
+    onReply,
 }: {
     items: Message[];
     meId: string;
@@ -91,14 +128,12 @@ export default function MessageList({
     editingMessageId?: string | null;
     onRequestEdit?: (id: string) => void;
     onEndEdit?: () => void;
+    onReply?: (msg: Message) => void;
 }) {
     const [atBottom, setAtBottom] = useState(true);
     const parentRef = useRef<HTMLDivElement | null>(null);
 
-    const rows = useMemo(
-        () => (meId ? buildRows(items, meId, newAnchorId) : []),
-        [items, meId, newAnchorId]
-    );
+    const rows = useMemo(() => (meId ? buildRows(items, meId, newAnchorId) : []), [items, meId, newAnchorId]);
 
     const rowVirtualizer = useVirtualizer({
         count: rows.length,
@@ -133,7 +168,7 @@ export default function MessageList({
                         const el = parentRef.current;
                         if (el) el.scrollTop = el.scrollHeight;
                     }}
-                    className="absolute bottom-24 right-3 sm:right-4 z-10 rounded-full border bg-card/95 p-2 text-xs shadow transition hover:shadow-md"
+                    className="absolute bottom-24 right-3 z-10 rounded-full border bg-card/95 p-2 text-xs shadow transition hover:shadow-md sm:right-4"
                     aria-label="Jump to present"
                 >
                     <ArrowDown className="h-4 w-4" />
@@ -141,10 +176,7 @@ export default function MessageList({
             )}
 
             <div ref={parentRef} className="flex-1 overflow-auto">
-                <div
-                    className="px-3 sm:px-4 md:px-6"
-                    style={{ height: rowVirtualizer.getTotalSize(), position: 'relative' }}
-                >
+                <div className="px-3 sm:px-4 md:px-6" style={{ height: rowVirtualizer.getTotalSize(), position: 'relative' }}>
                     {rowVirtualizer.getVirtualItems().map((vi) => {
                         const row = rows[vi.index];
 
@@ -174,21 +206,15 @@ export default function MessageList({
                                 )}
 
                                 {row?.kind === 'msg' && (
-                                    <div
-                                        className={[
-                                            'py-1',
-                                            'flex',
-                                            row.mine ? 'justify-end' : 'justify-start',
-                                        ].join(' ')}
-                                    >
+                                    <div className={['py-1', 'flex', row.mine ? 'justify-end' : 'justify-start'].join(' ')}>
                                         <div className="max-w-[92%] sm:max-w-[88%] md:max-w-[80%] lg:max-w-[72%] xl:max-w-[64%]">
                                             <MessageItem
                                                 id={row.msg.id}
+                                                onReply={() => onReply?.(row.msg)}
                                                 author={{
                                                     username: (row.msg.author as any).username,
-                                                    avatarUrl: (row as any).avatarUrl, 
+                                                    avatarUrl: (row as any).avatarUrl,
                                                 } as any}
-
                                                 content={row.msg.content}
                                                 createdAt={row.msg.createdAt}
                                                 mine={row.mine}
@@ -196,15 +222,21 @@ export default function MessageList({
                                                 editedAt={(row.msg as any).editedAt}
                                                 deletedAt={(row.msg as any).deletedAt}
                                                 deletedReason={(row.msg as any).deletedReason}
-                                                canEdit={row.mine && !row.msg.deletedAt && !row.msg.editedAt} 
+                                                canEdit={row.mine && !row.msg.deletedAt && !row.msg.editedAt}
                                                 canDelete={row.mine && !row.msg.deletedAt}
-                                                isEditing={editingMessageId === row.msg.id}                   
+                                                isEditing={editingMessageId === row.msg.id}
                                                 editLockActive={!!editingMessageId && editingMessageId !== row.msg.id}
-                                                onEdit={(next) => onEditMessage?.(row.msg, next)}             
+                                                onEdit={(next) => onEditMessage?.(row.msg, next)}
                                                 onDelete={() => onDeleteMessage?.(row.msg)}
-                                                onRequestEdit={() => onRequestEdit?.(row.msg.id)}            
+                                                onRequestEdit={() => onRequestEdit?.(row.msg.id)}
                                                 onEndEdit={() => onEndEdit?.()}
                                                 showHeader={(row as any).showHeader}
+                                                // 🔥 reply chip data
+                                                parentId={(row.msg as any).parentId}
+                                                parentAuthorName={row.parentPreview?.authorName}
+                                                parentText={row.parentPreview?.text}
+                                                parentDeleted={row.parentPreview?.deleted}
+
                                             />
                                         </div>
                                     </div>
@@ -217,4 +249,3 @@ export default function MessageList({
         </div>
     );
 }
-

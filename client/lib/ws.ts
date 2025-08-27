@@ -1,4 +1,3 @@
-// lib/ws.ts
 export type WSStatus = 'connecting' | 'connected' | 'offline';
 export type Listener = (ev: any) => void;
 
@@ -13,7 +12,6 @@ class WSManager {
   private pingTimer: any = null;
 
   constructor() {
-    // expose in window for quick testing
     // @ts-ignore
     if (typeof window !== 'undefined') window.__wsMgr = this;
   }

@@ -6,7 +6,7 @@ export const MOCK_ROOMS: Room[] = [
     name: 'general',
     type: 'channel',
     topic: 'Announcements and casual chat',
-    uuid: '2d3457ac-80c7-11f0-b194-00155ddecefe', // put your DB UUID here if you want history fetch to work
+    uuid: '2d3457ac-80c7-11f0-b194-00155ddecefe', 
   },
 ];
 

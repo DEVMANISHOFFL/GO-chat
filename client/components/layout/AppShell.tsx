@@ -22,6 +22,34 @@ import LogoutButton from '../auth/LogoutButton';
 type MessagesByRoom = Record<string, Message[]>;
 type TypersMap = Record<string, string>;
 
+function extractParentId(p: any): string | undefined {
+    const raw =
+        p?.parentId ??
+        p?.parent_id ??
+        p?.parent_msg_id ??
+        p?.reply_to ??
+        p?.parent ??
+        p?.meta?.parentId ??
+        p?.meta?.parent_id;
+
+    if (!raw) return undefined;
+    if (typeof raw === 'string') return raw;
+
+    // Common nested shapes from APIs
+    return (
+        raw?.id ??
+        raw?.msgId ??
+        raw?.messageId ??
+        raw?.message_id ??
+        raw?.parentId ??
+        raw?.parent_id ??
+        undefined
+    );
+}
+
+
+
+
 type ApiMessageDb = {
     roomId: string;
     msgId: string;
@@ -99,7 +127,7 @@ function mapDbToMessage(m: ApiMessageDb): Message {
         deletedAt: (m as any).deletedAt,
         deletedBy: (m as any).deletedBy,
         deletedReason: (m as any).deletedReason,
-        parentId, // 👈 now robust
+        parentId: extractParentId(m)
     };
 }
 
@@ -264,28 +292,27 @@ export default function AppShell({
                         author: safeAuthor,
                         content: String(content ?? ''),
                         createdAt: createdAt ?? new Date().toISOString(),
-                        // 🔥 parent from WS payload (support multiple casings)
-                        parentId, // 👈 keep it
+                        parentId: extractParentId(p),
                     };
 
                     setMessagesByRoom((prev) => {
                         const list = prev[bucket] || [];
+
                         const i = tempId ? list.findIndex((m) => m.id === tempId) : -1;
                         if (i >= 0) {
-
                             const prior = list[i];
                             const merged: Message = {
-                                ...prior,           // keeps optimistic fields
-                                ...nextMsg,         // server wins
-                                parentId: nextMsg.parentId ?? prior.parentId, // 👈 preserve if missing
+                                ...prior,            // keep optimistic fields
+                                ...nextMsg,          // server wins where present
+                                parentId: nextMsg.parentId ?? prior.parentId, // ✅ preserve if server omitted
                             };
                             const next = [...list];
                             next[i] = merged;
-                            next.sort(
-                                (a, b) => +new Date(a.createdAt as any) - +new Date(b.createdAt as any)
-                            );
+                            next.sort((a, b) => +new Date(a.createdAt as any) - +new Date(b.createdAt as any));
                             return { ...prev, [bucket]: next };
                         }
+
+
                         return { ...prev, [bucket]: applyInsert(list, nextMsg) };
                     });
                     break;
@@ -361,7 +388,11 @@ export default function AppShell({
     }, [meReady, currentRoomId, (active as any)?.uuid, active?.id]);
 
     // --- send helpers ---
-    const sendMessage = (roomIdVisibleSlugOrUuid: string, content: string) => {
+    const sendMessage = (
+        roomIdVisibleSlugOrUuid: string,
+        content: string,
+        parentId?: string
+    ) => {
         if (!meReady || !me) return;
 
         const tempId = makeTempId();
@@ -377,13 +408,13 @@ export default function AppShell({
                 author: me,
                 content,
                 createdAt: new Date().toISOString(),
-                parentId: replyingTo?.id, // 👈 optimistic parent
+                parentId, // ✅ keep on optimistic row
             }),
         }));
 
         wsManager.send({
             type: 'message.send',
-            payload: { tempId, roomId: joinId, content, parentId: replyingTo?.id },
+            payload: { tempId, roomId: joinId, content, parentId }, // ✅ include in WS
         } as any);
 
         setReplyingTo(null);
@@ -492,6 +523,7 @@ export default function AppShell({
                 <TypingIndicator names={typingNames} />
                 <Composer
                     roomId={currentRoomId}
+
                     placeholder={`Message # ${active?.name ?? ''}`}
                     onTypingStart={() =>
                         wsManager.send({
@@ -511,7 +543,7 @@ export default function AppShell({
                             payload: { roomId: joinKey, userId: me?.id ?? 'anon' },
                         } as any)
                     }
-                    onSend={({ text }) => sendMessage(joinKey, text)}
+                    onSend={({ text }) => sendMessage(joinKey, text, replyingTo?.id)} // 👈 pass it here
                     replyingTo={replyingTo}
                     onCancelReply={() => setReplyingTo(null)}
                 />

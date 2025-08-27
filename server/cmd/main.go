@@ -38,7 +38,7 @@ func main() {
 
 	chatRepo := chat.NewRepository(scyllaSession)
 	chatSvc := chat.NewService(chatRepo)
-	persist := func(roomID, userID gocql.UUID, text string, createdAt time.Time) (gocql.UUID, error) {
+	persist := func(roomID, userID gocql.UUID, text string, createdAt time.Time, parentID *gocql.UUID) (gocql.UUID, error) {
 		id := gocql.TimeUUID()
 		err := chatRepo.InsertMessage(&chat.Message{
 			RoomID:    roomID,
@@ -46,6 +46,7 @@ func main() {
 			UserID:    userID,
 			Content:   text,
 			CreatedAt: createdAt,
+			ParentID:  parentID,
 		})
 		return id, err
 	}

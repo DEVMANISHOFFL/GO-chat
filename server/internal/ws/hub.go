@@ -10,7 +10,12 @@ import (
 	"github.com/gocql/gocql"
 )
 
-type PersistMessageFunc func(roomID, userID gocql.UUID, text string, createdAt time.Time) (gocql.UUID, error)
+type PersistMessageFunc func(
+	roomID, userID gocql.UUID,
+	text string,
+	createdAt time.Time,
+	parentID *gocql.UUID,
+) (gocql.UUID, error)
 
 type UserLookupFunc func(ctx context.Context, userID gocql.UUID) (username string, err error)
 
@@ -263,6 +268,13 @@ func (h *Hub) routeEvent(ev Event) {
 		tempID, _ := ev.Payload["tempId"].(string)
 		roomIDStr, _ := ev.Payload["roomId"].(string)
 		content, _ := ev.Payload["content"].(string)
+		pParentStr, _ := ev.Payload["parentId"].(string)
+		var parentUUID *gocql.UUID
+		if pParentStr != "" {
+			if parsed, err := gocql.ParseUUID(pParentStr); err == nil {
+				parentUUID = &parsed
+			}
+		}
 
 		if ev.From == "" || roomIDStr == "" || content == "" {
 			return
@@ -276,7 +288,7 @@ func (h *Hub) routeEvent(ev Event) {
 
 		var dbMsgID gocql.UUID
 		if h.persistMessage != nil {
-			id, err := h.persistMessage(rid, uid, content, time.Now().UTC())
+			id, err := h.persistMessage(rid, uid, content, time.Now().UTC(), parentUUID)
 			if err != nil {
 				log.Printf("persistMessage error: %v", err)
 				if c := h.findClientByUser(ev.From); c != nil {
@@ -301,14 +313,20 @@ func (h *Hub) routeEvent(ev Event) {
 		}
 
 		createdAt := time.Now().UTC().Format(time.RFC3339Nano)
-		out := NewServerEvent("message.created", "server", roomIDStr, map[string]any{
+
+		payload := map[string]any{
 			"id":        dbMsgID.String(),
 			"tempId":    tempID,
 			"roomId":    roomIDStr,
 			"author":    map[string]any{"id": ev.From, "username": username},
 			"content":   content,
 			"createdAt": createdAt,
-		})
+		}
+		if parentUUID != nil {
+			payload["parentId"] = parentUUID.String() // 👈 include if present
+		}
+
+		out := NewServerEvent("message.created", "server", roomIDStr, payload)
 
 		h.broadcastToChannel(roomIDStr, out, "")
 		if h.Presence != nil {

@@ -33,6 +33,8 @@ type Message struct {
 	DeletedAt     *time.Time  `json:"deletedAt,omitempty"`
 	DeletedBy     *gocql.UUID `json:"deletedBy,omitempty"`
 	DeletedReason *string     `json:"deletedReason,omitempty"`
+	ParentID      *gocql.UUID `json:"parentId,omitempty"` // 👈 add this (pointer = nullable)
+
 }
 
 func (r *Repository) InsertRoom(room *Room) error {
@@ -75,9 +77,13 @@ func (r *Repository) GetRoomIDBySlug(slug string) (gocql.UUID, error) {
 }
 
 func (r *Repository) InsertMessage(m *Message) error {
-	const q = `INSERT INTO room_messages (room_id, msg_id, user_id, content, created_at)
-	           VALUES (?, ?, ?, ?, ?)`
-	return r.Session.Query(q, m.RoomID, m.MsgID, m.UserID, m.Content, m.CreatedAt).Exec()
+	const q = `INSERT INTO room_messages
+           (room_id, msg_id, user_id, content, created_at, parent_id)
+           VALUES (?, ?, ?, ?, ?, ?)`
+	return r.Session.Query(q,
+		m.RoomID, m.MsgID, m.UserID, m.Content, m.CreatedAt, m.ParentID,
+	).Exec()
+
 }
 
 func (r *Repository) ListMessages(roomID gocql.UUID, limit int, before *gocql.UUID) ([]Message, error) {
@@ -87,8 +93,8 @@ func (r *Repository) ListMessages(roomID gocql.UUID, limit int, before *gocql.UU
 
 	var iter *gocql.Iter
 	const baseQ = `SELECT room_id, msg_id, user_id, content, created_at,
-                          edited_at, deleted_at, deleted_by, deleted_reason
-                   FROM room_messages`
+                      edited_at, deleted_at, deleted_by, deleted_reason, parent_id
+               FROM room_messages`
 
 	if before != nil {
 		q := baseQ + `
@@ -107,7 +113,7 @@ func (r *Repository) ListMessages(roomID gocql.UUID, limit int, before *gocql.UU
 	msgs := make([]Message, 0, limit)
 	var m Message
 	for iter.Scan(&m.RoomID, &m.MsgID, &m.UserID, &m.Content, &m.CreatedAt,
-		&m.EditedAt, &m.DeletedAt, &m.DeletedBy, &m.DeletedReason) {
+		&m.EditedAt, &m.DeletedAt, &m.DeletedBy, &m.DeletedReason, &m.ParentID) {
 		msgs = append(msgs, m)
 	}
 	if err := iter.Close(); err != nil {
@@ -131,14 +137,16 @@ func (r *Repository) SoftDeleteMessage(roomID, msgID, deletedBy gocql.UUID, reas
 }
 
 func (r *Repository) GetMessage(roomID, msgID gocql.UUID) (*Message, error) {
-	const q = `SELECT room_id, msg_id, user_id, content, created_at, edited_at, deleted_at, deleted_by, deleted_reason
-	           FROM room_messages
-	           WHERE room_id = ? AND msg_id = ?
-	           LIMIT 1`
+	const q = `SELECT room_id, msg_id, user_id, content, created_at, edited_at, deleted_at, deleted_by, deleted_reason, parent_id
+           FROM room_messages
+           WHERE room_id = ? AND msg_id = ?
+           LIMIT 1`
+		   
 	var m Message
+
 	err := r.Session.Query(q, roomID, msgID).Scan(
 		&m.RoomID, &m.MsgID, &m.UserID, &m.Content, &m.CreatedAt,
-		&m.EditedAt, &m.DeletedAt, &m.DeletedBy, &m.DeletedReason,
+		&m.EditedAt, &m.DeletedAt, &m.DeletedBy, &m.DeletedReason, &m.ParentID,
 	)
 	if err != nil {
 		return nil, err

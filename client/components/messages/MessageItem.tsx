@@ -32,6 +32,7 @@ export default function MessageItem({
   parentAuthorName,
   parentText,
   parentDeleted,
+  onJumpToMessage
 }: {
   id: string;
   author: Author;
@@ -57,6 +58,8 @@ export default function MessageItem({
   parentAuthorName?: string;
   parentText?: string;
   parentDeleted?: boolean;
+  onJumpToMessage: (id: string) => void;
+
 }) {
   const created = new Date(typeof createdAt === 'number' ? createdAt : String(createdAt));
   const time = Number.isNaN(created.getTime()) ? '' : fmtTime(created.toISOString());
@@ -155,7 +158,7 @@ export default function MessageItem({
       ref={containerRef}
       id={id}
       className={
-        'group mx-auto max-w-3xl select-text px-3 py-1 ' +
+        'group mx-auto max-w-3xl select-text px-5 py-1 ' +
         (highlighted ? 'animate-pulse [animation-iteration-count:2]' : '')
       }
       onContextMenu={onCtx}
@@ -185,26 +188,66 @@ export default function MessageItem({
           {/* Bubble */}
           <div className={`rounded-2xl px-3 py-2 ${mine ? 'bg-primary/10' : 'bg-card border'}`}>
             {/* 🔥 Reply chip with author + snippet */}
-            {!isDeleted && parentId && (
+            {parentId && (
               <button
-                type="button"
-                onClick={jumpToParent}
-                className="mb-1 w-full max-w-full truncate rounded-md border border-transparent bg-muted/50 px-2 py-1 text-left text-xs text-muted-foreground hover:border-muted-foreground/20 hover:bg-muted"
-                title="Jump to original message"
+                onClick={() => onJumpToMessage(parentId)}
+
+                className={[
+
+                  // layout & space
+                  "group/reply rounded-xl   px-3 py-2 bg-muted border border-border/50 hover:bg-muted transition group/reply mb-1 w-full text-left",
+                  "rounded-xl px-3 py-2",
+                  // colors
+                  mine
+                    ? "bg-white/10 border border-white/15"
+                    : "bg-muted border border-border/50",
+                  // interactions
+
+                  "hover:bg-white/12 hover:border-white/25",
+                  "focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/60",
+                  // animation
+                  "transition-colors duration-150",
+                ].join(" ")}
+                aria-label={
+                  parentAuthorName
+                    ? `Jump to message from ${parentAuthorName}`
+                    : "Jump to replied message"
+                }
               >
-                {parentDeleted
-                  ? 'Replying to: original message deleted'
-                  : parentAuthorName || parentText
-                  ? (
-                      <>
-                        <span className="font-medium">@{parentAuthorName ?? 'unknown'}</span>
-                        {': '}
-                        <span className="opacity-80">{parentText ?? '…'}</span>
-                      </>
-                    )
-                  : 'Replying to message ↑'}
+                <div className="flex items-start gap-2">
+                  {/* left bar / connector */}
+                  <span
+                    className={[
+
+                      "mt-0.5 h-6 w-0.5 bg-red-300 rounded-full",
+                      mine ? "bg-primary/70" : "bg-foreground/20",
+                      "shrink-0",
+                    ].join(" ")}
+                  />
+                  <div className="min-w-0">
+                    {/* header row */}
+                    <div className="flex items-center gap-2 text-xs">
+                      <span className="font-semibold opacity-90">
+                        Replying to @{parentAuthorName ?? "unknown"}
+                      </span>
+                      {parentDeleted && (
+                        <span className="rounded bg-destructive/10 px-1.5 py-0.5 text-[10px] text-destructive">
+                          deleted
+                        </span>
+                      )}
+                    </div>
+
+                    {/* quoted text */}
+                    {!parentDeleted && (
+                      <div className="mt-0.5 line-clamp-2 text-xs text-foreground/80">
+                        {parentText ?? "Jump to original"}
+                      </div>
+                    )}
+                  </div>
+                </div>
               </button>
             )}
+
 
             {isDeleted ? (
               <p className="text-sm italic text-muted-foreground">

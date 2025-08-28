@@ -491,7 +491,7 @@ export default function AppShell({
             />
             <ChannelNav rooms={rooms} activeId={currentRoomId} onSelect={onSelectRoom} />
 
-            <div className="flex min-w-0 flex-1 flex-col">
+            <div className="flex min-w-0 flex-1 flex-col relative">
                 <div className="flex h-14 items-center gap-2 border-b bg-background px-2 md:px-3">
                     <MobileDrawer rooms={rooms} activeId={currentRoomId} onSelect={onSelectRoom} />
                     <HeaderBar
@@ -515,12 +515,14 @@ export default function AppShell({
                         onRequestEdit={(id) => setEditingMessageId(id)}
                         onEndEdit={() => setEditingMessageId(null)}
                         onReply={(msg) => setReplyingTo(msg)}
+                        typingNames={typingNames}   // 👈 pass names here
+
                     />
                 ) : (
-                    <div className="flex-1" />
+                    <div className="flex-1 " />
                 )}
 
-                <TypingIndicator names={typingNames} />
+                {/* <TypingIndicator names={typingNames} /> */}
                 <Composer
                     roomId={currentRoomId}
 

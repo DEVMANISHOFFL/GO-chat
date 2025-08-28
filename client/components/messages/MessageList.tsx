@@ -26,8 +26,15 @@ type Row =
         mine: boolean;
         showHeader: boolean;
         avatarUrl?: string;
-        parentPreview?: ParentPreview; // ✅ make sure this is here
+        parentPreview?: ParentPreview;
+    }
+    | {
+        kind: 'typing';
+        id: string;
+        names: string[];
+        avatars: string[]; // generated from names
     };
+
 
 // ---------- helpers ----------
 const GROUP_MS = 5 * 60 * 1000;
@@ -46,9 +53,13 @@ function avatarFor(seedLike: string) {
     return `https://api.dicebear.com/7.x/initials/svg?seed=${seed}&backgroundType=gradientLinear`;
 }
 
-function truncate(s: string | undefined | null, n = 80): string {
-    if (!s) return '';
-    return s.length > n ? s.slice(0, n) + '…' : s;
+function truncate(s: string, max = 100): string {
+    const str = (s ?? "").trim();
+    if (str.length <= max) return str;
+    // cut at a word boundary if possible
+    const cut = str.slice(0, max + 1);
+    const lastSpace = cut.lastIndexOf(" ");
+    return (lastSpace > 40 ? cut.slice(0, lastSpace) : str.slice(0, max)) + "…";
 }
 
 
@@ -118,6 +129,8 @@ export default function MessageList({
     onRequestEdit,
     onEndEdit,
     onReply,
+    typingNames,
+
 }: {
     items: Message[];
     meId: string;
@@ -129,11 +142,31 @@ export default function MessageList({
     onRequestEdit?: (id: string) => void;
     onEndEdit?: () => void;
     onReply?: (msg: Message) => void;
+    typingNames?: string[];
+
 }) {
     const [atBottom, setAtBottom] = useState(true);
+    const last = items[items.length - 1];
+
+
     const parentRef = useRef<HTMLDivElement | null>(null);
 
-    const rows = useMemo(() => (meId ? buildRows(items, meId, newAnchorId) : []), [items, meId, newAnchorId]);
+    const rows = useMemo(() => {
+        const base = meId ? buildRows(items, meId, newAnchorId) : [];
+        const activeTypers = (typingNames ?? []).filter(Boolean);
+
+        if (activeTypers.length > 0) {
+            const avatars = activeTypers.slice(0, 3).map(n => avatarFor(n)); // reuse your avatarFor()
+            base.push({
+                kind: 'typing',
+                id: 'typing-row',
+                names: activeTypers,
+                avatars,
+            });
+        }
+        return base;
+    }, [items, meId, newAnchorId, typingNames]);
+
 
     const rowVirtualizer = useVirtualizer({
         count: rows.length,
@@ -142,12 +175,51 @@ export default function MessageList({
         overscan: 10,
     });
 
+
+
+    const scrollToBottom = () => {
+        if (rows.length === 0) return;
+        rowVirtualizer.scrollToIndex(rows.length - 1, { align: 'end' });
+    };
+
+    const [localHi, setLocalHi] = useState<string | null>(null);
+
+
+    const idToIndex = useMemo(() => {
+        const m = new Map<string, number>();
+        rows.forEach((r, i) => {
+            if (r.kind === 'msg') m.set(r.id, i);
+        });
+        return m;
+    }, [rows]);
+
+    const jumpToMessage = (id: string) => {
+        const idx = idToIndex.get(id);
+        if (idx == null) return; // parent not in window
+        rowVirtualizer.scrollToIndex(idx, { align: 'center' });
+        setLocalHi(id);
+        window.setTimeout(() => setLocalHi(null), 1500);
+    };
+    const effHi = highlightId ?? localHi;
+
+
+
     useEffect(() => {
         if (atBottom) {
             const el = parentRef.current;
             if (el) el.scrollTop = el.scrollHeight;
         }
     }, [rows.length, atBottom]);
+
+    useEffect(() => {
+        if (items.length === 0) return;
+        const last = items[items.length - 1];
+        if (last.author?.id === meId) {
+            // I sent this message → scroll to bottom
+            scrollToBottom();
+        }
+    }, [items.length, meId]);
+
 
     useEffect(() => {
         const el = parentRef.current;
@@ -161,19 +233,25 @@ export default function MessageList({
     }, []);
 
     return (
-        <div className="relative flex min-h-0 flex-1 flex-col">
+        <div className="relative flex min-h-0 flex-1  flex-col">
             {!atBottom && (
                 <button
                     onClick={() => {
                         const el = parentRef.current;
                         if (el) el.scrollTop = el.scrollHeight;
+                        scrollToBottom
                     }}
-                    className="absolute bottom-24 right-3 z-10 rounded-full border bg-card/95 p-2 text-xs shadow transition hover:shadow-md sm:right-4"
+                    className="
+  absolute bottom-6 left-1/2 -translate-x-1/2 
+  z-10 rounded-full border bg-card/95 p-3 shadow 
+  transition hover:shadow-md
+"
                     aria-label="Jump to present"
                 >
                     <ArrowDown className="h-4 w-4" />
                 </button>
             )}
+
 
             <div ref={parentRef} className="flex-1 overflow-auto">
                 <div className="px-3 sm:px-4 md:px-6" style={{ height: rowVirtualizer.getTotalSize(), position: 'relative' }}>
@@ -193,6 +271,37 @@ export default function MessageList({
                                     transform: `translateY(${vi.start}px)`,
                                 }}
                             >
+                                {row?.kind === 'typing' && (
+                                    <div className="py-1  pl-8 flex justify-start">
+                                        {/* Overlapped avatars (like normal message avatar area) */}
+                                        <div className="mr-2 mt-0.5 flex -space-x-2">
+                                            {row.avatars.map((src, i) => (
+                                                <img
+                                                    key={i}
+                                                    src={src}
+                                                    alt=""
+                                                    className="h-8 w-8 rounded-full ring-2 ring-background shadow"
+                                                    style={{ zIndex: 10 - i }}
+                                                />
+                                            ))}
+                                            {row.names.length > 3 && (
+                                                <div className="h-8 w-8 rounded-full bg-muted ring-2 ring-background shadow flex items-center justify-center text-[11px] font-semibold text-muted-foreground">
+                                                    +{row.names.length - 3}
+                                                </div>
+                                            )}
+                                        </div>
+
+                                        {/* Bubble with same max-width as your other messages */}
+                                        <div className="max-w-[92%] sm:max-w-[88%] md:max-w-[80%] lg:max-w-[72%] xl:max-w-[64%]">
+                                            <div className="inline-flex items-center gap-1.5 rounded-2xl border border-border/40 bg-muted px-3 py-2 shadow-sm w-fit">
+                                                <Dot delay="0ms" />
+                                                <Dot delay="120ms" />
+                                                <Dot delay="240ms" />
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+
                                 {row?.kind === 'day' && (
                                     <div className="py-1">
                                         <DayDivider label={row.label} />
@@ -206,7 +315,14 @@ export default function MessageList({
                                 )}
 
                                 {row?.kind === 'msg' && (
-                                    <div className={['py-1', 'flex', row.mine ? 'justify-end' : 'justify-start'].join(' ')}>
+                                    <div className={[
+                                        'py-1', 'flex', 'rounded-2xl p-2 transition',
+                                        row.mine ? 'justify-end' : 'justify-start',
+                                        effHi === row.id
+                                            ? 'jump-highlight ring-2 ring-primary/60 shadow-[0_0_0_4px_rgba(99,102,241,0.15)]'
+                                            : ''
+                                    ].join(' ')}
+                                        style={{ scrollMarginTop: '40px' }}>
                                         <div className="max-w-[92%] sm:max-w-[88%] md:max-w-[80%] lg:max-w-[72%] xl:max-w-[64%]">
                                             <MessageItem
                                                 id={row.msg.id}
@@ -236,6 +352,7 @@ export default function MessageList({
                                                 parentAuthorName={row.parentPreview?.authorName}
                                                 parentText={row.parentPreview?.text}
                                                 parentDeleted={row.parentPreview?.deleted}
+                                                onJumpToMessage={jumpToMessage}
 
                                             />
                                         </div>
@@ -247,5 +364,15 @@ export default function MessageList({
                 </div>
             </div>
         </div>
+    );
+}
+
+function Dot({ delay }: { delay: string }) {
+    return (
+        <span
+            className="inline-block h-1.5 w-1.5 rounded-full bg-foreground/70 animate-ig-bounce"
+            style={{ animationDelay: delay }}
+            aria-hidden="true"
+        />
     );
 }

@@ -63,7 +63,7 @@ export default function Composer({
             e.preventDefault();
             const trimmed = value.trim();
             if (trimmed && !disabled) {
-                onSend({ text: trimmed },replyingTo?.id);
+                onSend({ text: trimmed }, replyingTo?.id);
                 setValue('');
             }
         }
@@ -91,6 +91,16 @@ export default function Composer({
             {replyingTo && (
                 <div className="mx-auto mb-2 flex max-w-3xl items-center gap-2 rounded-md border bg-card px-3 py-2 text-xs">
                     <span className="truncate">
+                        <svg
+                            viewBox="0 0 24 24"
+                            className="mr-1 inline h-3.5 w-3.5 opacity-70"
+                            aria-hidden="true"
+                        >
+                            <path
+                                d="M7 7v4c6 0 9 2 10 6-.5-4-3-9-10-10Zm0 0V3L2 8l5 5V7Z"
+                                fill="currentColor"
+                            />
+                        </svg>
                         Replying to <strong>@{replyingTo.author.username}</strong>:{' '}
                         {replyingTo.content.length > 80
                             ? replyingTo.content.slice(0, 80) + '…'

@@ -1,6 +1,8 @@
 'use client';
 
 import React, { PropsWithChildren, useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
+import { Home } from 'lucide-react';
 
 import LeftNav from './LeftNav';
 import ChannelNav from './ChannelNav';
@@ -494,6 +496,13 @@ export default function AppShell({
             <div className="flex min-w-0 flex-1 flex-col relative">
                 <div className="flex h-14 items-center gap-2 border-b bg-background px-2 md:px-3">
                     <MobileDrawer rooms={rooms} activeId={currentRoomId} onSelect={onSelectRoom} />
+                    <Link
+                        href="/"
+                        className="rounded-md p-2 hover:bg-accent"
+                        aria-label="Home"
+                    >
+                        <Home className="h-5 w-5" />
+                    </Link>
                     <HeaderBar
                         title={`# ${active?.name ?? 'room'}`}
                         subtitle={active?.topic}

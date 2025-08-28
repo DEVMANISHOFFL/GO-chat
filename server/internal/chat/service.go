@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"time"
@@ -149,4 +150,43 @@ func (s *Service) DeleteMessage(roomID, msgID, userID gocql.UUID, reason string)
 		DeletedBy:     userID.String(),
 		DeletedReason: reasonPtr,
 	}, nil
+}
+
+// func (s *Service) EnsureDM(a, b gocql.UUID) (gocql.UUID, bool, error) {
+// 	if a == b {
+// 		return gocql.UUID{}, false, errors.New("cannot DM yourself")
+// 	}
+// 	return s.Repo.EnsureDM(a, b)
+// }
+
+func (s *Service) EnsureDM(ctx context.Context, me gocql.UUID, peer gocql.UUID) (roomID gocql.UUID, created bool, err error) {
+	// guard: cannot DM yourself
+	if me == peer {
+		return gocql.UUID{}, false, errors.New("cannot DM yourself")
+	}
+	// delegate to repository (idempotent)
+	return s.Repo.EnsureDM(me, peer)
+}
+
+func (s *Service) IsParticipant(roomID, userID gocql.UUID) (bool, error) {
+	return s.Repo.IsParticipant(roomID, userID)
+}
+
+func (s *Service) EnsureMemberOrPublic(roomID, userID gocql.UUID) error {
+	ok, err := s.Repo.IsParticipant(roomID, userID)
+	if err != nil {
+		return err
+	}
+	if ok {
+		return nil
+	}
+	// If no participants exist, this is a public room → allow.
+	has, err := s.Repo.RoomHasParticipants(roomID)
+	if err != nil {
+		return err
+	}
+	if !has {
+		return nil
+	}
+	return errors.New("forbidden: not a participant")
 }

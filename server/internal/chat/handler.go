@@ -45,6 +45,8 @@ func (h *Handler) Register(r *mux.Router) {
 	r.HandleFunc("/rooms", h.ListRooms).Methods("GET")
 	r.HandleFunc("/rooms/{room_id}/messages", h.SendMessage).Methods("POST")
 	r.HandleFunc("/rooms/{room_id}/messages", h.ListMessages).Methods("GET")
+	r.HandleFunc("/dm/start", h.StartDM).Methods("POST")
+	r.HandleFunc("/users", h.ListUsers).Methods("GET")
 
 	r.HandleFunc("/rooms/{room_id}/messages/{msg_id}", h.EditMessage).Methods("PATCH")
 	r.HandleFunc("/rooms/{room_id}/messages/{msg_id}", h.DeleteMessage).Methods("DELETE")
@@ -94,7 +96,13 @@ func WSHandler(hub *ws.Hub, validator AuthValidator, logger *zap.Logger, sendQue
 		go client.ReadPump()
 
 		if roomID := r.URL.Query().Get("room_id"); roomID != "" {
-			hub.Subscribe(client, roomID)
+			if hub.CanJoin == nil || hub.CanJoin(roomID, userID) {
+				hub.Subscribe(client, roomID)
+			} else {
+				hub.EmitSystem(ws.NewServerEvent("error", "server", userID, map[string]any{
+					"reason": "forbidden_channel",
+				}))
+			}
 		}
 
 		welcome := ws.NewServerEvent("conn.ack", "server", userID, map[string]interface{}{
@@ -154,6 +162,7 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		utils.JSONResponse(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
 	}
+
 	uid, err := gocql.ParseUUID(uidStr)
 	if err != nil {
 		utils.JSONResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid user id"})
@@ -163,11 +172,16 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	roomIDStr := vars["room_id"]
 	roomID, err := gocql.ParseUUID(roomIDStr)
+
 	if err != nil {
 		utils.JSONResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid room id"})
 		return
 	}
 
+	if err := h.Svc.EnsureMemberOrPublic(roomID, uid); err != nil {
+		utils.JSONResponse(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+		return
+	}
 	var req SendMessageRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		utils.JSONResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
@@ -187,6 +201,23 @@ func (h *Handler) ListMessages(w http.ResponseWriter, r *http.Request) {
 	roomIDStr := vars["room_id"]
 
 	roomID, err := gocql.ParseUUID(roomIDStr)
+
+	uidStr := auth.GetUserID(r)
+	if strings.TrimSpace(uidStr) == "" {
+		utils.JSONResponse(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	uid, err := gocql.ParseUUID(uidStr)
+	if err != nil {
+		utils.JSONResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid user id"})
+		return
+	}
+	// allow if participant OR room has no participants (public)
+	if err := h.Svc.EnsureMemberOrPublic(roomID, uid); err != nil {
+		utils.JSONResponse(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+		return
+	}
+
 	if err != nil {
 
 		if h.Scylla == nil {
@@ -238,6 +269,11 @@ func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) {
 	msgID, err := gocql.ParseUUID(vars["msg_id"])
 	if err != nil {
 		utils.JSONResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid message id"})
+		return
+	}
+
+	if err := h.Svc.EnsureMemberOrPublic(roomID, uid); err != nil {
+		utils.JSONResponse(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
 		return
 	}
 
@@ -294,6 +330,10 @@ func (h *Handler) DeleteMessage(w http.ResponseWriter, r *http.Request) {
 		utils.JSONResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid message id"})
 		return
 	}
+	if err := h.Svc.EnsureMemberOrPublic(roomID, uid); err != nil {
+		utils.JSONResponse(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+		return
+	}
 
 	var req DeleteMessageRequest
 	_ = json.NewDecoder(r.Body).Decode(&req)
@@ -326,4 +366,119 @@ func (h *Handler) DeleteMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	utils.JSONResponse(w, http.StatusOK, res)
+}
+
+type startDMReq struct {
+	PeerID string `json:"peerId"`
+}
+
+type startDMRes struct {
+	RoomID       string `json:"roomId"`
+	Created      bool   `json:"created"`
+	PeerId       string `json:"peerId"`
+	PeerUsername string `json:"peerUsername"`
+}
+
+func (h *Handler) StartDM(w http.ResponseWriter, r *http.Request) {
+	// 1) who am I (me)?
+	userID := auth.GetUserID(r) // implement based on your JWT middleware
+	if userID == "" {
+		utils.JSONResponse(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	me, err := gocql.ParseUUID(userID)
+	if err != nil {
+		utils.JSONResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid user id"})
+		return
+	}
+
+	// 2) who am I trying to DM (peer)?
+	var req startDMReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		utils.JSONResponse(w, http.StatusBadRequest, map[string]string{"error": "bad request"})
+		return
+	}
+	if req.PeerID == "" {
+		utils.JSONResponse(w, http.StatusBadRequest, map[string]string{"error": "peerId required"})
+		return
+	}
+	peer, err := gocql.ParseUUID(req.PeerID)
+	if err != nil {
+		utils.JSONResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid peer id"})
+		return
+	}
+	if peer == me {
+		utils.JSONResponse(w, http.StatusBadRequest, map[string]string{"error": "cannot DM yourself"})
+		return
+	}
+
+	// 3) ensure/find DM room for (me, peer)
+	roomID, created, err := h.Svc.EnsureDM(r.Context(), me, peer)
+
+	if err != nil {
+		utils.JSONResponse(w, http.StatusInternalServerError, map[string]string{"error": "failed to create/find DM"})
+		return
+	}
+
+	// 4) optional: fetch peer's username for UI header
+	var peerName string
+	if err := h.Scylla.
+		Query(`SELECT username FROM users WHERE id = ? LIMIT 1`, peer).
+		WithContext(r.Context()).
+		Scan(&peerName); err != nil && err != gocql.ErrNotFound {
+		// if query failed for some other reason, you can log it; keep peerName empty
+	}
+
+	// 5) respond
+	utils.JSONResponse(w, http.StatusOK, startDMRes{
+		RoomID:       roomID.String(),
+		Created:      created,
+		PeerId:       peer.String(),
+		PeerUsername: peerName,
+	})
+}
+
+// ListUsers returns a basic directory of users (id, username).
+// Requires a valid JWT; excludes the caller from the list.
+// ListUsers returns all users (except the current one) with id + username.
+func (h *Handler) ListUsers(w http.ResponseWriter, r *http.Request) {
+	uidStr := auth.GetUserID(r) // whatever helper you use to extract user_id from JWT
+	if uidStr == "" {
+		utils.JSONResponse(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	// optional: limit param
+	limit := 100
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 && n <= 1000 {
+			limit = n
+		}
+	}
+
+	iter := h.Scylla.Query(`SELECT id, username FROM users`).Iter()
+	type userDTO struct {
+		ID       string `json:"id"`
+		Username string `json:"username"`
+	}
+
+	var users []userDTO
+	var id gocql.UUID
+	var uname string
+
+	for iter.Scan(&id, &uname) {
+		if id.String() == uidStr {
+			continue // skip self
+		}
+		users = append(users, userDTO{ID: id.String(), Username: uname})
+		if len(users) >= limit {
+			break
+		}
+	}
+	if err := iter.Close(); err != nil {
+		utils.JSONResponse(w, http.StatusInternalServerError, map[string]string{"error": "db error"})
+		return
+	}
+
+	utils.JSONResponse(w, http.StatusOK, users)
 }

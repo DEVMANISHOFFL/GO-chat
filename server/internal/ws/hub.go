@@ -33,6 +33,7 @@ type Hub struct {
 	shutdownOnce sync.Once
 	ctx          context.Context
 	cancel       context.CancelFunc
+	CanJoin      func(roomID string, userID string) bool
 
 	persistMessage PersistMessageFunc
 	userLookup     UserLookupFunc
@@ -227,6 +228,18 @@ func (h *Hub) routeEvent(ev Event) {
 		}
 		h.mu.RUnlock()
 		if cli != nil && ev.To != "" {
+			// 🔒 membership gate (no-op if CanJoin is nil)
+			if h.CanJoin != nil && !h.CanJoin(ev.To, ev.From) {
+				h.broadcastToUser(ev.From, Event{
+					Type:     "error",
+					From:     "server",
+					To:       ev.From,
+					Payload:  map[string]any{"reason": "forbidden_channel"},
+					ServerTs: time.Now().Unix(),
+				})
+				return
+			}
+
 			h.Subscribe(cli, ev.To)
 			h.broadcastToUser(ev.From, Event{
 				Type:     "channel.subscribed",

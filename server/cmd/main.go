@@ -38,6 +38,7 @@ func main() {
 
 	chatRepo := chat.NewRepository(scyllaSession)
 	chatSvc := chat.NewService(chatRepo)
+
 	persist := func(roomID, userID gocql.UUID, text string, createdAt time.Time, parentID *gocql.UUID) (gocql.UUID, error) {
 		id := gocql.TimeUUID()
 		err := chatRepo.InsertMessage(&chat.Message{
@@ -79,6 +80,27 @@ func main() {
 	authHandler := auth.NewHandler(authService)
 
 	r := mux.NewRouter()
+
+	hub.CanJoin = func(roomIDStr, userIDStr string) bool {
+		rid, err1 := gocql.ParseUUID(roomIDStr)
+		uid, err2 := gocql.ParseUUID(userIDStr)
+		if err1 != nil || err2 != nil {
+			return false
+		}
+
+		// 1) if user is a participant → allow
+		if ok, err := chatRepo.IsParticipant(rid, uid); err == nil && ok {
+			return true
+		}
+
+		// 2) if the room has no participants at all → treat as public → allow
+		if has, err := chatRepo.RoomHasParticipants(rid); err == nil && !has {
+			return true
+		}
+
+		// 3) otherwise deny
+		return false
+	}
 
 	api := r.PathPrefix("/api").Subrouter()
 	api.Use(auth.AuthMiddleware)

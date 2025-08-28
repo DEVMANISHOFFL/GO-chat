@@ -5,6 +5,8 @@ import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import type { Room } from '../../lib/types';
+import Link from 'next/link';
+import { Home } from 'lucide-react';
 
 
 export default function ChannelNav({ rooms, activeId, onSelect }: { rooms: Room[]; activeId?: string; onSelect: (id: string) => void }) {

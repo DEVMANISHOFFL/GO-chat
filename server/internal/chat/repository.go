@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"bytes"
 	"time"
 
 	"github.com/gocql/gocql"
@@ -141,7 +142,7 @@ func (r *Repository) GetMessage(roomID, msgID gocql.UUID) (*Message, error) {
            FROM room_messages
            WHERE room_id = ? AND msg_id = ?
            LIMIT 1`
-		   
+
 	var m Message
 
 	err := r.Session.Query(q, roomID, msgID).Scan(
@@ -153,3 +154,83 @@ func (r *Repository) GetMessage(roomID, msgID gocql.UUID) (*Message, error) {
 	}
 	return &m, nil
 }
+
+// EnsureDM returns the DM room for (a,b); creates it if missing.
+// Idempotent: (a,b) ordered lexicographically.
+func (r *Repository) EnsureDM(a, b gocql.UUID) (gocql.UUID, bool, error) {
+	ua, ub := a, b
+	if bytes.Compare(ua[:], ub[:]) > 0 {
+		ua, ub = ub, ua
+	}
+
+	// 1) lookup existing
+	var rid gocql.UUID
+	err := r.Session.Query(
+		`SELECT room_id FROM dm_threads WHERE user_a=? AND user_b=? LIMIT 1`,
+		ua, ub,
+	).Scan(&rid)
+	if err == nil && rid != (gocql.UUID{}) {
+		return rid, false, nil
+	}
+	if err != nil && err != gocql.ErrNotFound {
+		return gocql.UUID{}, false, err
+	}
+
+	// 2) create new room
+	now := time.Now().UTC()
+	roomID := gocql.TimeUUID()
+	if err := r.Session.Query(
+		`INSERT INTO rooms (room_id, name, created_by, created_at) VALUES (?, ?, ?, ?)`,
+		roomID, "dm", ua, now,
+	).Exec(); err != nil {
+		return gocql.UUID{}, false, err
+	}
+
+	// 3) add two participants
+	for _, uid := range []gocql.UUID{ua, ub} {
+		if err := r.Session.Query(
+			`INSERT INTO room_participants (room_id, user_id, member_role, joined_at) VALUES (?, ?, 'member', ?)`,
+			roomID, uid, now,
+		).Exec(); err != nil {
+			return gocql.UUID{}, false, err
+		}
+	}
+
+	// 4) write mapping
+	if err := r.Session.Query(
+		`INSERT INTO dm_threads (user_a, user_b, room_id, created_at) VALUES (?, ?, ?, ?)`,
+		ua, ub, roomID, now,
+	).Exec(); err != nil {
+		return gocql.UUID{}, false, err
+	}
+
+	return roomID, true, nil
+}
+
+// IsParticipant checks if userID belongs to roomID.
+func (r *Repository) IsParticipant(roomID, userID gocql.UUID) (bool, error) {
+	var u gocql.UUID
+	err := r.Session.Query(
+		`SELECT user_id FROM room_participants WHERE room_id=? AND user_id=? LIMIT 1`,
+		roomID, userID,
+	).Scan(&u)
+	if err == gocql.ErrNotFound {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// RoomHasParticipants returns true if the room has at least one participant row.
+func (r *Repository) RoomHasParticipants(roomID gocql.UUID) (bool, error) {
+	var uid gocql.UUID
+	err := r.Session.Query(
+		`SELECT user_id FROM room_participants WHERE room_id = ? LIMIT 1`,
+		roomID,
+	).Scan(&uid)
+	if err == gocql.ErrNotFound {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+

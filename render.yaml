@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: gochat-frontend
+    env: docker
+    plan: free
+    dockerfilePath: ./client/Dockerfile
+    dockerContext: ./client
+    autoDeploy: true
+    envVars:
+      - key: NEXT_PUBLIC_API_URL
+        value: http://gochat-backend:8080
+
+  - type: web
+    name: gochat-backend
+    env: docker
+    plan: free
+    dockerfilePath: ./server/Dockerfile
+    dockerContext: ./server
+    autoDeploy: true

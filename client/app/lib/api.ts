@@ -79,14 +79,11 @@ export async function listRooms(limit = 50): Promise<RoomLite[]> {
   });
   if (res.status === 401) throw new Error('AUTH');
   if (!res.ok) throw new Error(`rooms ${res.status}`);
-  // Backend returns an array of rooms; ensure each item has id+name
   const data = await res.json();
-  // Normalize: some backends use `roomId`—map it to `id`
   return (data as any[]).map((r) => ({
     id: r.id || r.roomId || r.RoomID || r.slug || String(r.id),
     name: r.name || r.Name || 'room',
     topic: r.topic || r.Topic || '',
-    // AppShell maps uuid->slug if present; help it by echoing id
     uuid: r.uuid || r.RoomID || r.id || r.roomId,
   }));
 }

@@ -1,52 +1,59 @@
 'use client';
-import React from 'react';
-import { Hash, Plus, ChevronRight } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { ScrollArea } from '@/components/ui/scroll-area';
-import { Separator } from '@/components/ui/separator';
-import type { Room } from '../../lib/types';
+
 import Link from 'next/link';
-import { Home } from 'lucide-react';
+import { usePathname } from 'next/navigation';
+import { Hash, Home } from 'lucide-react';
 
+export default function ChannelNav({
+  rooms,
+  activeId,
+  onSelect, // kept for API but we’ll rely on links
+}: {
+  rooms: Array<{ id: string; name: string }>;
+  activeId: string;
+  onSelect: (id: string) => void;
+}) {
+  const pathname = usePathname();
 
-export default function ChannelNav({ rooms, activeId, onSelect }: { rooms: Room[]; activeId?: string; onSelect: (id: string) => void }) {
-    return (
-        <div className="hidden h-full w-64 flex-col border-r bg-card md:flex">
-            <div className="flex items-center gap-2 p-3">
-                <Hash className="h-4 w-4" />
-                <span className="font-semibold">Channels</span>
-                <div className="ml-auto" />
-                <Button size="icon" variant="ghost" aria-label="Add channel">
-                    <Plus className="h-4 w-4" />
-                </Button>
-            </div>
-            <Separator />
-            <ScrollArea className="flex-1">
-                <div className="p-2">
-                    {rooms.map((r) => {
-                        const active = r.id === activeId;
-                        return (
-                            <button
-                                key={r.id}
-                                onClick={() => onSelect(r.id)}
-                                className={
-                                    'group flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors ' +
-                                    (active ? 'bg-primary/10 text-foreground' : 'hover:bg-muted')
-                                }
-                            >
-                                <Hash className="h-4 w-4" />
-                                <span className="truncate">{r.name}</span>
-                                <div className="ml-auto flex items-center gap-2">
-                                    {r.unreadCount ? (
-                                        <span className="rounded-full bg-primary px-2 py-0.5 text-xs text-primary-foreground">{r.unreadCount}</span>
-                                    ) : null}
-                                    <ChevronRight className="h-4 w-4 opacity-0 transition-opacity group-hover:opacity-100" />
-                                </div>
-                            </button>
-                        );
-                    })}
-                </div>
-            </ScrollArea>
+  return (
+    <aside className="hidden w-60 shrink-0 border-r bg-card md:flex md:flex-col">
+      <div className="flex items-center gap-2 border-b px-3 py-2">
+        <Link href="/" className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-accent">
+          <Home className="h-5 w-5" />
+          <span className="text-sm font-medium">Home</span>
+        </Link>
+      </div>
+
+      <div className="flex items-center justify-between px-3 py-2">
+        <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Channels
         </div>
-    );
+        <div className="text-xs text-muted-foreground">{rooms?.length ?? 0}</div>
+      </div>
+
+      <nav className="flex-1 overflow-auto px-2 pb-2">
+        {rooms.map((r) => {
+          const href = `/rooms/${r.id}`;
+          const active = r.id === activeId || pathname === href;
+          return (
+            <Link
+              key={r.id}
+              href={href}
+              className={[
+                'group flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent',
+                active ? 'bg-accent font-medium' : '',
+              ].join(' ')}
+              title={r.name}
+            >
+              <Hash className="h-4 w-4 opacity-70 group-hover:opacity-100" />
+              <span className="truncate"># {r.name}</span>
+            </Link>
+          );
+        })}
+        {!rooms.length && (
+          <div className="px-2 py-1.5 text-xs text-muted-foreground">No rooms yet.</div>
+        )}
+      </nav>
+    </aside>
+  );
 }

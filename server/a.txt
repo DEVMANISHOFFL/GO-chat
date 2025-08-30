@@ -1,0 +1,146 @@
+.env
+.git/COMMIT_EDITMSG
+.git/HEAD
+.git/ORIG_HEAD
+.git/config
+.git/description
+.git/hooks/applypatch-msg.sample
+.git/hooks/commit-msg.sample
+.git/hooks/fsmonitor-watchman.sample
+.git/hooks/post-update.sample
+.git/hooks/pre-applypatch.sample
+.git/hooks/pre-commit.sample
+.git/hooks/pre-merge-commit.sample
+.git/hooks/pre-push.sample
+.git/hooks/pre-rebase.sample
+.git/hooks/pre-receive.sample
+.git/hooks/prepare-commit-msg.sample
+.git/hooks/push-to-checkout.sample
+.git/hooks/sendemail-validate.sample
+.git/hooks/update.sample
+.git/index
+.git/info/exclude
+.git/logs/HEAD
+Accept:
+Authorization:
+Content-Length:
+Content-Type:
+Dockerfile
+Host:
+Newlearning.txt
+POST
+User-Agent:
+bugs.md
+cmd/main.go
+core-functionality.md
+details_structure.md
+docker-compose.yml
+go.mod
+go.sum
+internal/auth/handler.go
+internal/auth/middleware.go
+internal/auth/model.go
+internal/auth/repository.go
+internal/auth/service.go
+internal/auth/utils.go
+internal/chat/handler.go
+internal/chat/model.go
+internal/chat/repository.go
+internal/chat/service.go
+internal/db/redis.go
+internal/db/scylla.go
+internal/presence/presence.go
+internal/utils/generateJWT.go
+internal/utils/http.go
+internal/utils/password.go
+internal/utils/response.go
+internal/ws/client.go
+internal/ws/events.go
+internal/ws/hub.go
+learnings.md
+main
+migration/001_reactions.cql
+objective.md
+openAPI.txt
+openapi.yml
+openapitools.json
+schema.cql
+step.md
+stripcomments/main.go
+stucture.md
+thecodebymanish@Jarvis:~/development/GOchat/server$ 
+
+
+
+
+stucture.md
+thecodebymanish@Jarvis:~/development/GOchat/server$ code a.txt
+thecodebymanish@Jarvis:~/development/GOchat/server$ grep -R -nE "websocket|gorilla|Upgrader|Upgrade|WriteJSON|ReadJSON|ReadMessage|WriteMessage|Hub|Client struct" .
+./go.sum:24:github.com/gorilla/mux v1.8.1 h1:TuBL49tXwgrFYWhqrNgrUNEY92u81SPhu7sTdzQEiWY=
+./go.sum:25:github.com/gorilla/mux v1.8.1/go.mod h1:AKf9I4AEqPTmMytcMc0KkNouC66V3BtZ4qD5fmWSiMQ=
+./go.sum:26:github.com/gorilla/websocket v1.5.3 h1:saDtZ6Pbx/0u+bgYQ3q96pZgCzfhKXGPqt7kZ72aNNg=
+./go.sum:27:github.com/gorilla/websocket v1.5.3/go.mod h1:YR8l580nyteQvAITg2hZ9XVh4b55+EU/adAjf1fMHhE=
+grep: ./main: binary file matches
+./go.mod:9:     github.com/gorilla/mux v1.8.1
+./go.mod:10:    github.com/gorilla/websocket v1.5.3
+./core-functionality.md:111:- **Third-Party Integrations (GitHub, Drive, Notion)**
+./objective.md:11:- OAuth login (optional: Google, GitHub)
+./objective.md:16:- WebSocket-based real-time messaging (Go `gorilla/websocket`)
+./learnings.md:172:- **Hub** — manages clients, user connections, subscriptions  
+./learnings.md:195:hub := ws.NewHub(persist)
+./learnings.md:291:- **Hub** — central WS broadcast manager (clients/users/channels)  
+./cmd/main.go:21:       "github.com/gorilla/mux"
+./cmd/main.go:70:       hub := ws.NewHub(persist, lookup)
+./cmd/main.go:117:              utils.WriteJSON(w, http.StatusOK, map[string]any{
+grep: ./.git/objects/86/e630eec703b7f2051adfe59956f2c3657a1e6b: binary file matches
+./openapi.yml:373:        Upgrade to WebSocket with either `?token=<JWT>` query param or an `Authorization: Bearer <JWT>` header.
+./openapi.yml:392:          description: WebSocket Upgrade
+./Newlearning.txt:168:  • Built a generic internal/ws package: Hub, Client, Event.
+./Newlearning.txt:181:      hub := ws.NewHub(persist)
+./Newlearning.txt:184:  • "channel.subscribe" -> Hub.Subscribe(client, room_id) and ack
+./internal/auth/handler.go:10:  "github.com/gorilla/mux"
+./internal/chat/handler.go:12:  "github.com/gorilla/mux"
+./internal/chat/handler.go:13:  "github.com/gorilla/websocket"
+./internal/chat/handler.go:23:var upgrader = websocket.Upgrader{
+./internal/chat/handler.go:36:  Hub    *ws.Hub
+./internal/chat/handler.go:39:func NewHandler(s *Service, scylla *gocql.Session, hub *ws.Hub) *Handler {
+./internal/chat/handler.go:40:  return &Handler{Svc: s, Scylla: scylla, Hub: hub}
+./internal/chat/handler.go:55:func WSHandler(hub *ws.Hub, validator AuthValidator, logger *zap.Logger, sendQueueSize int) http.HandlerFunc {
+./internal/chat/handler.go:82:          conn, err := upgrader.Upgrade(w, r, nil)
+./internal/chat/handler.go:300: if h.Hub != nil {
+./internal/chat/handler.go:307:         h.Hub.EmitSystem(ev)
+./internal/chat/handler.go:356: if h.Hub != nil {
+./internal/chat/handler.go:367:         h.Hub.EmitSystem(ev)
+./internal/ws/hub.go:22:type Hub struct {
+./internal/ws/hub.go:45:func NewHub(persist PersistMessageFunc, lookup UserLookupFunc) *Hub {
+./internal/ws/hub.go:47:        return &Hub{
+./internal/ws/hub.go:62:func (h *Hub) RegisterClient(c *Client)   { h.register <- c }
+./internal/ws/hub.go:63:func (h *Hub) UnregisterClient(c *Client) { h.unregister <- c }
+./internal/ws/hub.go:65:func (h *Hub) firstClientIDForUser(userID string) string {
+./internal/ws/hub.go:76:func (h *Hub) broadcast(ev Event) {
+./internal/ws/hub.go:87:func (h *Hub) Run() {
+./internal/ws/hub.go:115:func (h *Hub) Shutdown(ctx context.Context) {
+./internal/ws/hub.go:122:func (h *Hub) addClient(c *Client) {
+./internal/ws/hub.go:142:func (h *Hub) removeClient(c *Client) {
+./internal/ws/hub.go:176:func (h *Hub) routeEvent(ev Event) {
+./internal/ws/hub.go:356:func (h *Hub) broadcastAll(ev Event) {
+./internal/ws/hub.go:364:func (h *Hub) broadcastToUser(userID string, ev Event) bool {
+./internal/ws/hub.go:377:func (h *Hub) broadcastToChannel(channelID string, ev Event, excludeClientID string) {
+./internal/ws/hub.go:392:func (h *Hub) SafeSend(c *Client, ev Event) {
+./internal/ws/hub.go:406:func (h *Hub) Subscribe(c *Client, channelID string) {
+./internal/ws/hub.go:416:func (h *Hub) Unsubscribe(c *Client, channelID string) {
+./internal/ws/hub.go:428:func (h *Hub) drainAndClose() {
+./internal/ws/hub.go:442:func (h *Hub) findClientByUser(userID string) *Client {
+./internal/ws/hub.go:453:func (h *Hub) EmitSystem(ev Event) {
+./internal/ws/client.go:9:      "github.com/gorilla/websocket"
+./internal/ws/client.go:19:type Client struct {
+./internal/ws/client.go:22:     conn          *websocket.Conn
+./internal/ws/client.go:25:     hub           *Hub
+./internal/ws/client.go:28:func NewClient(conn *websocket.Conn, userID string, hub *Hub, sendQueueSize int) *Client {
+./internal/ws/client.go:52:             _, message, err := c.conn.ReadMessage()
+./internal/ws/client.go:54:                     if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+./internal/ws/client.go:92:                             _ = c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+./internal/ws/client.go:95:                     w, err := c.conn.NextWriter(websocket.TextMessage)
+./internal/ws/client.go:108:                    if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+./internal/utils/http.go:8:func WriteJSON(w http.ResponseWriter, status int, v any) {
+thecodebymanish@Jarvis:~/development/GOchat/server$ 

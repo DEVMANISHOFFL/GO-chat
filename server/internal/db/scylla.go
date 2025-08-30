@@ -1,23 +1,28 @@
 package db
 
 import (
+	"fmt"
 	"log"
-	"time"
+
+	"gochat/internal/utils"
 
 	"github.com/gocql/gocql"
 )
 
 func InitScylla(hosts []string, keyspace string) *gocql.Session {
-	cluster := gocql.NewCluster(hosts...)
+	// Add port explicitly
+	host := utils.GetEnv("SCYLLA_HOST", "gochat_scylla")
+	port := utils.GetEnv("SCYLLA_PORT", "9042")
+
+	cluster := gocql.NewCluster(fmt.Sprintf("%s:%s", host, port))
 	cluster.Keyspace = keyspace
 	cluster.Consistency = gocql.Quorum
-	cluster.Timeout = 10 * time.Second
 
 	session, err := cluster.CreateSession()
 	if err != nil {
-		log.Fatalf("Failed to connect to ScyllaDB: %v", err)
+		log.Fatalf("❌ Failed to connect to ScyllaDB: %v", err)
 	}
 
-	log.Println("Connected to ScyllaDB")
+	log.Println("✅ Connected to ScyllaDB at", host+":"+port)
 	return session
 }

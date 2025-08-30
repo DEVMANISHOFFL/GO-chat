@@ -491,8 +491,11 @@ export default function AppShell({
                 onOpenSettings={() => alert('Settings TBD')}
                 onOpenQuickSwitcher={() => setQsOpen(true)}
             />
-            <ChannelNav rooms={rooms} activeId={currentRoomId} onSelect={onSelectRoom} />
-
+            <ChannelNav
+                rooms={rooms}
+                activeId={currentRoomId}
+                onSelect={onSelectRoom}
+            />
             <div className="flex min-w-0 flex-1 flex-col relative">
                 <div className="flex h-14 items-center gap-2 border-b bg-background px-2 md:px-3">
                     <MobileDrawer rooms={rooms} activeId={currentRoomId} onSelect={onSelectRoom} />

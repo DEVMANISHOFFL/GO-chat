@@ -1,0 +1,60 @@
+services:
+  backend:
+    build: ./server
+    container_name: gochat_backend
+    ports:
+      - "8080:8080"
+    env_file:
+      - ./server/.env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
+
+  frontend:
+    build: ./client
+    container_name: gochat_frontend
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: "http://localhost:8080"
+    depends_on:
+      - backend
+
+  redis:
+    image: redis:7
+    container_name: gochat_redis
+    ports:
+      - "6379:6379"
+
+  scylla:
+    image: scylladb/scylla:5.2
+    container_name: gochat_scylla
+    ports:
+      - "9042:9042"
+    command: --smp 1 --memory 750M
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'DESCRIBE KEYSPACES' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  migrate:
+    image: scylladb/scylla:5.2
+    container_name: gochat_migrate
+    depends_on:
+      scylla:
+        condition: service_healthy
+    volumes:
+      - ./migration:/migration
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        until cqlsh scylla -e "DESCRIBE KEYSPACES"; do
+          echo "⏳ waiting for scylla..."
+          sleep 5
+        done
+        echo "✅ Running migration..."
+        cqlsh scylla -f /migration/001_init.cql

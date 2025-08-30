@@ -25,15 +25,15 @@ import (
 
 func main() {
 
-	httpAddr := getEnv("HTTP_ADDR", ":8080")
-	scyllaHost := getEnv("SCYLLA_HOST", "127.0.0.1")
-	scyllaKeyspace := getEnv("SCYLLA_KEYSPACE", "chat_app")
-	redisAddr := getEnv("REDIS_ADDR", "127.0.0.1:6379")
+	httpAddr := utils.GetEnv("HTTP_ADDR", ":8080")
+	// scyllaHost := utils.GetEnv("SCYLLA_HOST", "127.0.0.1")
+	scyllaKeyspace := utils.GetEnv("SCYLLA_KEYSPACE", "chat_app")
+	// redisAddr := utils.GetEnv("REDIS_ADDR", "127.0.0.1:6379")
 
-	scyllaSession := db.InitScylla([]string{scyllaHost}, scyllaKeyspace)
+	scyllaSession := db.InitScylla(nil, scyllaKeyspace)
 	defer scyllaSession.Close()
 
-	redisClient := db.InitRedis(redisAddr)
+	redisClient := db.InitRedis()
 	defer redisClient.Close()
 
 	chatRepo := chat.NewRepository(scyllaSession)
@@ -182,13 +182,6 @@ func main() {
 		log.Printf("server shutdown: %v", err)
 	}
 	log.Println("server stopped")
-}
-
-func getEnv(k, def string) string {
-	if v := os.Getenv(k); v != "" {
-		return v
-	}
-	return def
 }
 
 func pingScylla(sess *gocql.Session) error {
